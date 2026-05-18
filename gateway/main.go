@@ -21,8 +21,8 @@ func main() {
 		})
 	})
 
-	err := http.ListenAndServe(":8082", g)
+	err := http.ListenAndServe(":8072", g)
 	if err != nil {
-		log.Fatalf("HTTP server error")
+		log.Fatalf("HTTP server error %v",err)
 	}
 }

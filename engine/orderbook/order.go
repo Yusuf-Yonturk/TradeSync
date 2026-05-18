@@ -12,10 +12,10 @@ const (
 type OrderStatus string
 
 const (
-	Open           OrderStatus = "OPEN"
-	PartiallFilled OrderStatus = "PARTIALLY_FILLED"
-	Filled         OrderStatus = "FILLED"
-	Cancelled      OrderStatus = "CANCELLED"
+	Open            OrderStatus = "OPEN"
+	PartiallyFilled OrderStatus = "PARTIALLY_FILLED"
+	Filled          OrderStatus = "FILLED"
+	Cancelled       OrderStatus = "CANCELLED"
 )
 
 type Order struct {
@@ -29,6 +29,17 @@ type Order struct {
 	Timestamp time.Time
 
 	HeapIndex int
+}
+
+func updateOrderStatus(order *Order) {
+	switch {
+	case order.FilledQty == 0:
+		order.Status = Open
+	case order.FilledQty < order.Quantity:
+		order.Status = PartiallyFilled
+	default:
+		order.Status = Filled
+	}
 }
 
 func (o *Order) RemainingQty() int64 {

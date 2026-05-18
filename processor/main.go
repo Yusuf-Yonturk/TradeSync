@@ -19,7 +19,7 @@ func main() {
 			"time":    time.Now().UTC().Format(time.RFC3339),
 		})
 
-		err := http.ListenAndServe(":8083", p)
+		err := http.ListenAndServe(":8073", p)
 		if err != nil {
 			log.Fatalf("HTTP Server Error")
 		}
