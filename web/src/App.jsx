@@ -189,6 +189,14 @@ function PriceChart({ market, klines, latestTrade }) {
         crosshair: {
           mode: 0,
         },
+        rightPriceScale: {
+          autoScale: true,
+          scaleMargins: {
+            top: 0.1,
+            bottom: 0.1,
+          },
+          mode: 0,
+        },
       });
 
       const series = chart.addSeries(CandlestickSeries, {
@@ -231,6 +239,8 @@ function PriceChart({ market, klines, latestTrade }) {
       if (candleSeriesRef.current && latestTrade && latestTrade.symbol === market) {
         const ts = Math.floor(new Date(latestTrade.traded_at || latestTrade.timestamp).getTime() / 1000);
         const minute = ts - (ts % 60);
+        // Normalize price: trades come in raw integer units, divide by 10000
+        const tradePrice = latestTrade.price / 10000;
         
         let lastCandle = null;
         if (klines && klines.length > 0) {
@@ -238,22 +248,22 @@ function PriceChart({ market, klines, latestTrade }) {
         }
 
         if (lastCandle && lastCandle.time === minute) {
+          // lastCandle values are already normalized (divided by 10000 in api.js)
           candleSeriesRef.current.update({
             time: minute,
-            open: lastCandle.open / 10000,
-            high: Math.max(lastCandle.high, latestTrade.price) / 10000,
-            low: Math.min(lastCandle.low, latestTrade.price) / 10000,
-            close: latestTrade.price / 10000
+            open: lastCandle.open,
+            high: Math.max(lastCandle.high, tradePrice),
+            low: Math.min(lastCandle.low, tradePrice),
+            close: tradePrice
           });
         } else {
-          // If no previous candle, lightweight charts sometimes errors on update.
-          // In that case, we can fetch klines again or ignore it until polling catches up.
+          // New candle minute
           candleSeriesRef.current.update({
             time: minute,
-            open: latestTrade.price / 10000,
-            high: latestTrade.price / 10000,
-            low: latestTrade.price / 10000,
-            close: latestTrade.price / 10000
+            open: tradePrice,
+            high: tradePrice,
+            low: tradePrice,
+            close: tradePrice
           });
         }
       }
