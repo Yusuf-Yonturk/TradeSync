@@ -1,0 +1,71 @@
+/* --- OrderBook --- */
+.ob-cols {
+  display: grid;
+  padding: 6px 16px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.ob-cols.orderbook {
+  grid-template-columns: 1fr 1fr;
+}
+.ob-cols.orderbook span:nth-child(2) { text-align: right; }
+
+.ob-list {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  flex: 1;
+}
+/* For reverse direction in Asks */
+.ob-list.asks {
+  justify-content: flex-end;
+}
+
+.ob-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 2px 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  position: relative;
+}
+.ob-row:hover {
+  background-color: var(--bg-hover);
+}
+.ob-row span {
+  z-index: 1;
+}
+.ob-row span:nth-of-type(1) { text-align: left; }
+.ob-row span:nth-of-type(2) { text-align: right; }
+
+/* Depth Bars */
+.depth-bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  z-index: 0;
+  opacity: 0.15;
+}
+.ob-row.ask .depth-bar { background-color: var(--sell); }
+.ob-row.bid .depth-bar { background-color: var(--buy); }
+
+.spread-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  background-color: var(--bg-surface);
+}
+.spread-price {
+  font-size: 16px;
+  font-weight: 600;
+}
+.spread-val {
+  font-size: 12px;
+  color: var(--text-muted);
+}
