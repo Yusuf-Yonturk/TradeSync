@@ -136,7 +136,7 @@ export default function OrderForm({ user, market, depth, balances }) {
           ))}
         </div>
 
-        <button type="submit" className={`btn-action ${side === "BUY" ? "btn-buy" : "btn-sell"}`} disabled={loading} style={{ marginTop: '8px' }}>
+        <button type="submit" className={`btn-action btn-submit ${side === "BUY" ? "btn-buy" : "btn-sell"}`} disabled={loading}>
           {side === "BUY" ? `${crypto} AL` : `${crypto} SAT`}
         </button>
       </form>
