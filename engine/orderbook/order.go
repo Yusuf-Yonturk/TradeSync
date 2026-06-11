@@ -21,6 +21,7 @@ const (
 type Order struct {
 	ID        string
 	UserID    string
+	Symbol    string
 	Side      Side
 	Price     int64
 	Quantity  int64
