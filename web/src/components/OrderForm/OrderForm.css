@@ -1,0 +1,123 @@
+/* --- Advanced Order Form --- */
+.order-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+}
+.order-tab {
+  flex: 1;
+  text-align: center;
+  padding: 10px 0;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 12px;
+  border-bottom: 2px solid transparent;
+}
+.order-tab.active {
+  color: var(--text-main);
+  border-bottom: 2px solid var(--accent);
+}
+
+/* Side Toggle (Buy/Sell) */
+.side-toggle {
+  display: flex;
+  gap: 8px;
+}
+.side-btn {
+  flex: 1;
+  height: 36px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-weight: 600;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.side-btn.buy.active {
+  background: var(--buy-bg);
+  color: var(--buy);
+  border-color: var(--buy);
+}
+.side-btn.sell.active {
+  background: var(--sell-bg);
+  color: var(--sell);
+  border-color: var(--sell);
+}
+
+.order-form-content {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.input-group {
+  display: flex;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  height: 36px;
+  align-items: center;
+  padding: 0 12px;
+}
+.input-group:focus-within {
+  border-color: var(--text-muted);
+}
+.input-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  width: 48px;
+}
+.input-group input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  text-align: right;
+  outline: none;
+  width: 100%;
+}
+.input-suffix {
+  margin-left: 8px;
+  color: var(--text-main);
+  font-size: 12px;
+}
+
+.percent-slider {
+  display: flex;
+  gap: 4px;
+}
+.pct-btn {
+  flex: 1;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  height: 24px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.pct-btn:hover { background: var(--bg-hover); color: var(--text-main); }
+
+.action-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.btn-action {
+  flex: 1;
+  height: 40px;
+  border: none;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 14px;
+  color: #fff;
+  cursor: pointer;
+}
+.btn-buy { background: var(--buy); }
+.btn-sell { background: var(--sell); }
+.btn-buy:hover { opacity: 0.9; }
+.btn-sell:hover { opacity: 0.9; }

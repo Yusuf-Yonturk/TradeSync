@@ -1,0 +1,19 @@
+/* --- Trades List --- */
+.trade-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+.trade-row {
+  display: grid;
+  grid-template-columns: 80px 1fr 1fr;
+  padding: 4px 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.trade-row:hover {
+  background-color: var(--bg-hover);
+}
+.trade-row span:nth-child(2) { text-align: right; }
+.trade-row span:nth-child(3) { text-align: right; }
