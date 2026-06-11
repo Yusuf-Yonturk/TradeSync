@@ -1,10 +1,63 @@
-/* --- Trades List --- */
+/* --- Trades & Orders List --- */
 .trade-list {
   display: flex;
   flex-direction: column;
   flex: 1;
   overflow: hidden;
 }
+
+/* Tab başlıkları */
+.tl-tabs {
+  display: flex !important;
+  gap: 0 !important;
+  padding: 0 !important;
+  height: 40px;
+}
+
+.tl-tab {
+  padding: 0 14px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  border-bottom: 2px solid transparent;
+  transition: color 0.2s, border-color 0.2s;
+  white-space: nowrap;
+}
+
+.tl-tab.active {
+  color: var(--text-main);
+  border-bottom-color: var(--accent);
+}
+
+.tl-tab:hover:not(.active) {
+  color: var(--text-main);
+}
+
+/* Sütun başlıkları */
+.ob-cols {
+  display: grid;
+  padding: 6px 16px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.trades-cols {
+  grid-template-columns: 80px 1fr 1fr;
+}
+.trades-cols span:nth-child(2) { text-align: right; }
+.trades-cols span:nth-child(3) { text-align: right; }
+
+.orders-cols {
+  grid-template-columns: 40px 1fr 1fr 32px;
+}
+.orders-cols span:nth-child(2) { text-align: right; }
+.orders-cols span:nth-child(3) { text-align: right; }
+.orders-cols span:nth-child(4) { text-align: center; }
+
+/* Tamamlanmış işlem satırı */
 .trade-row {
   display: grid;
   grid-template-columns: 80px 1fr 1fr;
@@ -17,3 +70,48 @@
 }
 .trade-row span:nth-child(2) { text-align: right; }
 .trade-row span:nth-child(3) { text-align: right; }
+
+/* Açık emir satırı */
+.order-row {
+  display: grid;
+  grid-template-columns: 40px 1fr 1fr 32px;
+  padding: 5px 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  align-items: center;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.order-row:hover {
+  background-color: var(--bg-hover);
+}
+.order-row span:nth-child(2) { text-align: right; }
+.order-row span:nth-child(3) { text-align: right; }
+
+/* İptal butonu */
+.cancel-btn {
+  background: none;
+  border: 1px solid rgba(248,73,96,0.3);
+  color: var(--sell);
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  font-size: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto;
+  transition: background 0.2s, border-color 0.2s;
+}
+.cancel-btn:hover {
+  background: rgba(248,73,96,0.15);
+  border-color: var(--sell);
+}
+
+/* Boş durum mesajı */
+.tl-empty {
+  text-align: center;
+  padding: 24px 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+}

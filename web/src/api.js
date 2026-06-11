@@ -60,3 +60,26 @@ export async function submitOrder(order) {
   if (!res.ok) throw new Error(data.error || "order gonderilemedi");
   return data;
 }
+
+/**
+ * Kullanıcının açık (bekleyen) emirlerini getirir.
+ * user_id ile filtreleme yapar.
+ */
+export async function fetchOrders(userId, symbol = "") {
+  const params = new URLSearchParams({ user_id: userId });
+  if (symbol) params.append("symbol", symbol);
+  const res = await fetch(`${BASE}/orders?${params}`);
+  if (!res.ok) throw new Error("emirler alinamadi");
+  return res.json();
+}
+
+/**
+ * Belirli bir emiri iptal eder.
+ */
+export async function cancelOrder(orderId) {
+  const res = await fetch(`${BASE}/orders/${orderId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("emir iptal edilemedi");
+  return res.json();
+}

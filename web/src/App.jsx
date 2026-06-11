@@ -57,7 +57,7 @@ export default function App() {
         <PriceChart market={market} klines={klines} latestTrade={trades[0]} />
         <div className="right-col">
           <OrderForm user={user} market={market} depth={depth} balances={balances} />
-          <TradeListPanel trades={trades} user={user} />
+          <TradeListPanel trades={trades} user={user} market={market} />
         </div>
       </div>
 

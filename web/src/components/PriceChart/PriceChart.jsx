@@ -53,6 +53,7 @@ export default function PriceChart({ market, klines, latestTrade }) {
       return () => {
         chart.remove();
         chartRef.current = null;
+        candleSeriesRef.current = null;
       };
     } catch(err) {
       console.error("Chart init error:", err);
@@ -62,11 +63,27 @@ export default function PriceChart({ market, klines, latestTrade }) {
   // Update data when klines change
   useEffect(() => {
     try {
-      if (candleSeriesRef.current && klines.length > 0) {
-        candleSeriesRef.current.setData(klines);
-        if (chartRef.current) {
-          chartRef.current.timeScale().fitContent();
-        }
+      if (!candleSeriesRef.current || klines.length === 0) return;
+      
+      // Geçersiz veriyi filtrele:
+      // - open/high/low/close sıfır veya negatif olan mumları çıkar
+      // - high < low olan tutarsız mumları çıkar
+      const validKlines = klines.filter(k =>
+        k.open  > 0 &&
+        k.high  > 0 &&
+        k.low   > 0 &&
+        k.close > 0 &&
+        k.high >= k.low   &&
+        k.high >= k.open  &&
+        k.high >= k.close
+      );
+
+      if (validKlines.length === 0) return;
+
+      candleSeriesRef.current.setData(validKlines);
+
+      if (chartRef.current) {
+        chartRef.current.timeScale().fitContent();
       }
     } catch(err) {
       console.error("Chart setData error:", err);
@@ -76,36 +93,38 @@ export default function PriceChart({ market, klines, latestTrade }) {
   // Update latest candle with latest trade
   useEffect(() => {
     try {
-      if (candleSeriesRef.current && latestTrade && latestTrade.symbol === market) {
-        const ts = Math.floor(new Date(latestTrade.traded_at || latestTrade.timestamp).getTime() / 1000);
-        const minute = ts - (ts % 60);
-        // Normalize price: trades come in raw integer units, divide by 10000
-        const tradePrice = latestTrade.price / 10000;
-        
-        let lastCandle = null;
-        if (klines && klines.length > 0) {
-          lastCandle = klines[klines.length - 1];
-        }
+      if (!candleSeriesRef.current || !latestTrade) return;
+      if (latestTrade.symbol !== market) return;
 
-        if (lastCandle && lastCandle.time === minute) {
-          // lastCandle values are already normalized (divided by 10000 in api.js)
-          candleSeriesRef.current.update({
-            time: minute,
-            open: lastCandle.open,
-            high: Math.max(lastCandle.high, tradePrice),
-            low: Math.min(lastCandle.low, tradePrice),
-            close: tradePrice
-          });
-        } else {
-          // New candle minute
-          candleSeriesRef.current.update({
-            time: minute,
-            open: tradePrice,
-            high: tradePrice,
-            low: tradePrice,
-            close: tradePrice
-          });
-        }
+      // Ham integer fiyatı normalize et
+      const tradePrice = latestTrade.price / 10000;
+      if (tradePrice <= 0) return; // Geçersiz fiyatı yoksay
+
+      const ts     = Math.floor(new Date(latestTrade.traded_at || latestTrade.timestamp).getTime() / 1000);
+      const minute = ts - (ts % 60);
+
+      // Klines içindeki son muma bak (yalnızca geçerli olanlar)
+      const validKlines = klines.filter(k => k.open > 0 && k.high > 0 && k.low > 0 && k.close > 0);
+      const lastCandle  = validKlines.length > 0 ? validKlines[validKlines.length - 1] : null;
+
+      if (lastCandle && lastCandle.time === minute) {
+        // Aynı dakikadaki mumu güncelle (klines zaten normalize edilmiş)
+        candleSeriesRef.current.update({
+          time:  minute,
+          open:  lastCandle.open,
+          high:  Math.max(lastCandle.high, tradePrice),
+          low:   Math.min(lastCandle.low,  tradePrice),
+          close: tradePrice,
+        });
+      } else {
+        // Yeni dakika → yeni mum oluştur
+        candleSeriesRef.current.update({
+          time:  minute,
+          open:  tradePrice,
+          high:  tradePrice,
+          low:   tradePrice,
+          close: tradePrice,
+        });
       }
     } catch(err) {
       console.error("Chart update error:", err);
@@ -115,8 +134,11 @@ export default function PriceChart({ market, klines, latestTrade }) {
   return (
     <div className="panel" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
       <div className="panel-header">{market} / Chart</div>
-      <div className="chart-container" ref={chartContainerRef} style={{ flex: 1, minHeight: '400px', width: '100%', position: 'relative' }}>
-      </div>
+      <div
+        className="chart-container"
+        ref={chartContainerRef}
+        style={{ flex: 1, minHeight: '400px', width: '100%', position: 'relative' }}
+      />
     </div>
   );
 }
