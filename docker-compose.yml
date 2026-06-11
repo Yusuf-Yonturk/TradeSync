@@ -4,8 +4,34 @@ services:
     container_name: tradesync-kafka
     ports:
       - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      CLUSTER_ID: "5L6g3nShT-eMCtK--X86sw"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
     volumes:
       - kafka_data:/var/lib/kafka/data
+
+  kafka-setup:
+    image: apache/kafka:3.9.0
+    container_name: tradesync-kafka-setup
+    depends_on:
+      - kafka
+    command: >
+      bash -c "
+      echo 'Waiting for kafka...';
+      while ! /opt/kafka/bin/kafka-topics.sh --list --bootstrap-server kafka:9092 >/dev/null 2>&1; do sleep 1; done;
+      /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic orders --bootstrap-server kafka:9092;
+      /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic trades --bootstrap-server kafka:9092;
+      /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic depth --bootstrap-server kafka:9092;
+      /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic events --bootstrap-server kafka:9092;
+      echo 'Topics created successfully';"
 
   postgres:
     image: postgres:16
@@ -28,7 +54,73 @@ services:
     volumes:
       - redis_data:/data
 
+  gateway:
+    image: golang:alpine
+    container_name: tradesync-gateway
+    working_dir: /app/gateway
+    volumes:
+      - ./:/app
+      - go_mod_cache:/go/pkg/mod
+    ports:
+      - "8072:8072"
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+      - POSTGRES_DSN=postgres://ts_user:ts_pass@postgres:5432/tradesync
+      - REDIS_ADDR=redis:6379
+    depends_on:
+      - kafka
+      - postgres
+      - redis
+      - kafka-setup
+    command: go run .
+
+  engine:
+    image: golang:alpine
+    container_name: tradesync-engine
+    working_dir: /app/engine
+    volumes:
+      - ./:/app
+      - go_mod_cache:/go/pkg/mod
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+    depends_on:
+      - kafka
+      - kafka-setup
+    command: go run .
+
+  processor:
+    image: golang:alpine
+    container_name: tradesync-processor
+    working_dir: /app/processor
+    volumes:
+      - ./:/app
+      - go_mod_cache:/go/pkg/mod
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+      - POSTGRES_DSN=postgres://ts_user:ts_pass@postgres:5432/tradesync
+      - REDIS_ADDR=redis:6379
+    depends_on:
+      - kafka
+      - postgres
+      - redis
+      - kafka-setup
+    command: go run .
+
+  marketmaker:
+    image: golang:alpine
+    container_name: tradesync-marketmaker
+    working_dir: /app/marketmaker
+    volumes:
+      - ./:/app
+      - go_mod_cache:/go/pkg/mod
+    environment:
+      - GATEWAY_URL=http://gateway:8072
+    depends_on:
+      - gateway
+    command: go run .
+
 volumes:
   kafka_data:
   pg_data:
   redis_data:
+  go_mod_cache:

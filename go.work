@@ -1,7 +1,9 @@
-go 1.26.1
+go 1.23.0
+
 use (
-    ./engine
-    ./gateway
-    ./processor
-    ./shared
-    )
+	./engine
+	./gateway
+	./marketmaker
+	./processor
+	./shared
+)
