@@ -53,6 +53,10 @@ func main() {
 				log.Printf("order parse hatasi: %v", err)
 				return
 			}
+			if err := validateIncoming(incoming); err != nil {
+				log.Printf("gecersiz order atlandi id=%s: %v", incoming.ID, err)
+				return
+			}
 
 			book := getOrCreateBook(books, incoming.Symbol)
 			order := toOrder(incoming)
