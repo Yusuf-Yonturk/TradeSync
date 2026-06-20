@@ -146,7 +146,7 @@ func main() {
 			return
 		}
 
-		ctxTimeout, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctxTimeout, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 
 		val, err := rdb.Get(ctxTimeout, "orderbook:"+symbol).Result()
@@ -155,6 +155,7 @@ func main() {
 				writeJSON(w, http.StatusOK, map[string]interface{}{"bids": []interface{}{}, "asks": []interface{}{}})
 				return
 			}
+			log.Printf("depth okuma hatasi: %v", err)
 			http.Error(w, "redis okuma hatasi", http.StatusInternalServerError)
 			return
 		}
@@ -170,16 +171,23 @@ func main() {
 			return
 		}
 
-		res, err := rdb.HGetAll(context.Background(), "klines:"+symbol).Result()
+		ctxTimeout, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+
+		res, err := rdb.HGetAll(ctxTimeout, "klines:"+symbol).Result()
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			log.Printf("klines okuma hatasi: %v", err)
+			http.Error(w, "redis okuma hatasi", http.StatusInternalServerError)
 			return
 		}
 
-		var klines []Kline
+		// bos sonucta null degil [] donmeli, istemci dizi bekliyor
+		klines := make([]Kline, 0, len(res))
 		for _, val := range res {
 			var k Kline
-			json.Unmarshal([]byte(val), &k)
+			if err := json.Unmarshal([]byte(val), &k); err != nil {
+				continue
+			}
 			klines = append(klines, k)
 		}
 

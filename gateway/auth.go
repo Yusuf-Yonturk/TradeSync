@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
@@ -56,7 +57,8 @@ func registerHandler(db *pgxpool.Pool) http.HandlerFunc {
 				writeJSON(w, http.StatusConflict, map[string]string{"error": "kullanici adi zaten var"})
 				return
 			}
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "kayit hatasi: " + err.Error()})
+			log.Printf("kayit hatasi: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "kayit hatasi"})
 			return
 		}
 
