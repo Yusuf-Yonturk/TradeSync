@@ -1,0 +1,17 @@
+# derlenmis servisler
+/engine/engine
+/gateway/gateway
+/processor/processor
+/marketmaker/marketmaker
+*.exe
+*.test
+*.out
+
+# ortam
+.env
+.env.*
+!.env.example
+
+.DS_Store
+.idea
+.vscode
