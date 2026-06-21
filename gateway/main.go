@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,16 @@ import (
 )
 
 const topicOrders = "orders"
+
+const (
+	maxBodyBytes = 1 << 16
+	// Degerler 10^4 olcekli tutuluyor; ust sinir defterdeki toplamlarin tasmasini onler.
+	maxPrice    = int64(1e13)
+	maxQuantity = int64(1e13)
+)
+
+// BTC-USD gibi; serbest metin kabul edilirse her istek yeni bir defter ve redis anahtari acar.
+var symbolRe = regexp.MustCompile(`^[A-Z0-9]{2,10}-[A-Z0-9]{2,10}$`)
 
 type OrderRequest struct {
 	Symbol   string `json:"symbol"`
@@ -63,8 +74,8 @@ func validate(r OrderRequest) string {
 	if strings.TrimSpace(r.UserID) == "" {
 		return "user_id bos olamaz"
 	}
-	if strings.TrimSpace(r.Symbol) == "" {
-		return "symbol bos olamaz"
+	if !symbolRe.MatchString(r.Symbol) {
+		return "gecersiz symbol"
 	}
 	if r.Side != "BUY" && r.Side != "SELL" {
 		return "side BUY veya SELL olmali"
@@ -72,8 +83,14 @@ func validate(r OrderRequest) string {
 	if r.Price <= 0 {
 		return "price sifirdan buyuk olmali"
 	}
+	if r.Price > maxPrice {
+		return "price cok buyuk"
+	}
 	if r.Quantity <= 0 {
 		return "quantity sifirdan buyuk olmali"
+	}
+	if r.Quantity > maxQuantity {
+		return "quantity cok buyuk"
 	}
 	return ""
 }
@@ -95,6 +112,12 @@ func corsMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Govde boyutunu sinirlayarak JSON okur.
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	return json.NewDecoder(r.Body).Decode(v)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -141,7 +164,7 @@ func main() {
 
 	mux.HandleFunc("GET /depth", func(w http.ResponseWriter, r *http.Request) {
 		symbol := r.URL.Query().Get("symbol")
-		if symbol == "" {
+		if !symbolRe.MatchString(symbol) {
 			http.Error(w, "symbol gerekli", http.StatusBadRequest)
 			return
 		}
@@ -166,7 +189,7 @@ func main() {
 
 	mux.HandleFunc("GET /klines", func(w http.ResponseWriter, r *http.Request) {
 		symbol := r.URL.Query().Get("symbol")
-		if symbol == "" {
+		if !symbolRe.MatchString(symbol) {
 			http.Error(w, "symbol param gerekli", http.StatusBadRequest)
 			return
 		}
@@ -211,7 +234,7 @@ func main() {
 
 	mux.HandleFunc("POST /orders", func(w http.ResponseWriter, r *http.Request) {
 		var req OrderRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSON(w, r, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "gecersiz json"})
 			return
 		}
@@ -244,12 +267,8 @@ func main() {
 			Value: data,
 		}
 
-		var produceErr error
-		producer.Produce(ctx, record, func(_ *kgo.Record, err error) {
-			produceErr = err
-		})
-		if err := producer.Flush(ctx); err != nil || produceErr != nil {
-			log.Printf("kafka yazma hatasi: flush=%v produce=%v", err, produceErr)
+		if err := producer.ProduceSync(ctx, record).FirstErr(); err != nil {
+			log.Printf("kafka yazma hatasi: %v", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "kafka yazma hatasi"})
 			return
 		}
@@ -293,7 +312,14 @@ func main() {
 
 	addr := ":8072"
 	log.Printf("gateway basliyor %s", addr)
-	if err := http.ListenAndServe(addr, corsMiddleware(mux)); err != nil {
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           corsMiddleware(mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("sunucu hatasi: %v", err)
 	}
 }
