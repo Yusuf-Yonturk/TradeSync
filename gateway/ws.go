@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -15,6 +16,13 @@ var upgrader = websocket.Upgrader{
 		return true // CORS her isteğe açık
 	},
 }
+
+const (
+	// Yavas bir istemci yayini ve kafka okuyucusunu kilitlemesin.
+	wsWriteTimeout = 5 * time.Second
+	// Istemciler veri gondermez, sadece kontrol cerceveleri beklenir.
+	wsReadLimit = 1024
+)
 
 type WSHub struct {
 	mu      sync.Mutex
@@ -46,6 +54,7 @@ func (h *WSHub) Broadcast(msg []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for conn := range h.clients {
+		conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 			conn.Close()
 			delete(h.clients, conn)
@@ -59,6 +68,7 @@ func (h *WSHub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		log.Println("ws upgrade hatasi:", err)
 		return
 	}
+	conn.SetReadLimit(wsReadLimit)
 	h.AddClient(conn)
 
 	// Bağlantı açık kaldığı sürece dinle, kopunca temizle
