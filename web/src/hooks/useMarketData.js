@@ -1,7 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { fetchTrades, fetchDepth, fetchKlines } from '../api';
-
-const WS_URL = 'wss://api.yusufyonturk.com/tradesync/gateway/ws';
+import { fetchTrades, fetchDepth, fetchKlines, WS_URL } from '../api';
 
 /**
  * Market verilerini (trade, depth, klines) ve WebSocket bağlantısını yöneten hook.

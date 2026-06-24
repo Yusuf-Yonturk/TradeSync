@@ -61,7 +61,7 @@ export default function AuthScreen({ onLoginSuccess }) {
           </div>
           <div className="input-group-auth">
             <label>Şifre</label>
-            <input name="p" type="password" placeholder="••••••••" required />
+            <input name="p" type="password" placeholder="••••••••" minLength={isLogin ? undefined : 8} required />
           </div>
           <button
             type="submit"

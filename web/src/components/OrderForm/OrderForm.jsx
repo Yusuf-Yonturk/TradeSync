@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { submitOrder } from '../../api';
+import { submitOrder, AuthError } from '../../api';
 import './OrderForm.css';
 
-export default function OrderForm({ user, market, depth, balances }) {
+export default function OrderForm({ user, market, depth, balances, onSessionExpired }) {
   const [side, setSide] = useState("BUY");
   const [form, setForm] = useState({ price: "", quantity: "" });
   const [loading, setLoading] = useState(false);
@@ -71,16 +71,16 @@ export default function OrderForm({ user, market, depth, balances }) {
       const parsedQty = parseNumber(form.quantity);
       
       const payload = {
-        user_id: user.user_id,
         symbol: market,
         side,
         price: Math.floor(parsedPrice * 10000),
         quantity: Math.floor(parsedQty * 10000),
       };
-      await submitOrder(payload);
+      await submitOrder(payload, user.token);
       set("quantity", ""); // Sadece miktarı sıfırla
     } catch(err) {
       alert("Hata: " + err.message);
+      if (err instanceof AuthError) onSessionExpired?.();
     } finally {
       setLoading(false);
     }

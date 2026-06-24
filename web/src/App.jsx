@@ -11,9 +11,13 @@ import WalletModal from "./components/Modals/WalletModal";
 
 export default function App() {
   const [user, setUser] = useState(() => {
-    const saved = localStorage.getItem("ts_user");
-    if (saved === "undefined") return null;
-    return saved ? JSON.parse(saved) : null;
+    try {
+      const saved = JSON.parse(localStorage.getItem("ts_user"));
+      // Token'siz eski kayitlar emir gonderemez, yeniden giris gerekir.
+      return saved?.user_id && saved?.token ? saved : null;
+    } catch {
+      return null;
+    }
   });
 
   const [market, setMarket] = useState("BTC-USD");
@@ -56,7 +60,7 @@ export default function App() {
         <OrderBookPanel depth={depth} lastPrice={trades[0]?.price} />
         <PriceChart market={market} klines={klines} latestTrade={trades[0]} />
         <div className="right-col">
-          <OrderForm user={user} market={market} depth={depth} balances={balances} />
+          <OrderForm user={user} market={market} depth={depth} balances={balances} onSessionExpired={handleLogout} />
           <TradeListPanel trades={trades} user={user} market={market} />
         </div>
       </div>

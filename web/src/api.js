@@ -1,8 +1,14 @@
-const BASE = "https://api.yusufyonturk.com/tradesync/gateway";
+// Yerelde calisirken web/.env.local icine VITE_API_BASE=http://localhost:8072 yazilabilir.
+const BASE = (import.meta.env.VITE_API_BASE || "https://api.yusufyonturk.com/tradesync/gateway").replace(/\/$/, "");
+
+export const WS_URL = BASE.replace(/^http/, "ws") + "/ws";
+
+// Oturum gecersizse cagiran taraf kullaniciyi cikisa yonlendirebilsin.
+export class AuthError extends Error {}
 
 export async function fetchTrades(symbol = "") {
   const url = symbol
-    ? `${BASE}/trades?symbol=${symbol}`
+    ? `${BASE}/trades?symbol=${encodeURIComponent(symbol)}`
     : `${BASE}/trades`;
   const res = await fetch(url);
   if (!res.ok) throw new Error("trades alinamadi");
@@ -10,7 +16,7 @@ export async function fetchTrades(symbol = "") {
 }
 
 export async function fetchKlines(symbol) {
-  const res = await fetch(`${BASE}/klines?symbol=${symbol}`);
+  const res = await fetch(`${BASE}/klines?symbol=${encodeURIComponent(symbol)}`);
   if (!res.ok) throw new Error("Failed to fetch klines");
   const raw = await res.json();
   return raw.map(k => ({
@@ -23,7 +29,7 @@ export async function fetchKlines(symbol) {
 }
 
 export async function fetchDepth(symbol) {
-  const res = await fetch(`${BASE}/depth?symbol=${symbol}`);
+  const res = await fetch(`${BASE}/depth?symbol=${encodeURIComponent(symbol)}`);
   if (!res.ok) throw new Error("depth fetch failed");
   return res.json();
 }
@@ -50,13 +56,17 @@ export async function login(username, password) {
   return data;
 }
 
-export async function submitOrder(order) {
+export async function submitOrder(order, token) {
   const res = await fetch(`${BASE}/orders`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
     body: JSON.stringify(order),
   });
   const data = await res.json();
+  if (res.status === 401) throw new AuthError(data.error || "Oturum süresi doldu");
   if (!res.ok) throw new Error(data.error || "order gonderilemedi");
   return data;
 }
