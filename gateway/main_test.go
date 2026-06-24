@@ -3,7 +3,7 @@ package main
 import "testing"
 
 func validRequest() OrderRequest {
-	return OrderRequest{UserID: "u1", Symbol: "BTC-USD", Side: "BUY", Price: 650000000, Quantity: 10000}
+	return OrderRequest{Symbol: "BTC-USD", Side: "BUY", Price: 650000000, Quantity: 10000}
 }
 
 func TestValidate(t *testing.T) {
@@ -29,6 +29,31 @@ func TestValidate(t *testing.T) {
 		r := validRequest()
 		mutate(&r)
 		if msg := validate(r); msg == "" {
+			t.Errorf("%s: hata bekleniyordu", name)
+		}
+	}
+}
+
+func TestValidateRegister(t *testing.T) {
+	ok := RegisterRequest{Name: "Ada", Username: "ada_1", Password: "cokgizli1"}
+	if msg := validateRegister(ok); msg != "" {
+		t.Fatalf("gecerli kayit reddedildi: %s", msg)
+	}
+
+	long := make([]byte, maxPasswordLen+1)
+	for i := range long {
+		long[i] = 'a'
+	}
+	cases := map[string]func(*RegisterRequest){
+		"kisa kullanici adi":   func(r *RegisterRequest) { r.Username = "ab" },
+		"bosluklu kullanici":   func(r *RegisterRequest) { r.Username = "ada lovelace" },
+		"kisa sifre":           func(r *RegisterRequest) { r.Password = "1234567" },
+		"bcrypt sinirini asan": func(r *RegisterRequest) { r.Password = string(long) },
+	}
+	for name, mutate := range cases {
+		r := ok
+		mutate(&r)
+		if msg := validateRegister(r); msg == "" {
 			t.Errorf("%s: hata bekleniyordu", name)
 		}
 	}

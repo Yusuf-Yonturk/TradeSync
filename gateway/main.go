@@ -36,7 +36,6 @@ type OrderRequest struct {
 	Side     string `json:"side"`
 	Price    int64  `json:"price"`
 	Quantity int64  `json:"quantity"`
-	UserID   string `json:"user_id"` // frontend'den gelir, auth'dan sonra set edilir
 }
 
 type OrderMessage struct {
@@ -71,9 +70,6 @@ type Kline struct {
 }
 
 func validate(r OrderRequest) string {
-	if strings.TrimSpace(r.UserID) == "" {
-		return "user_id bos olamaz"
-	}
 	if !symbolRe.MatchString(r.Symbol) {
 		return "gecersiz symbol"
 	}
@@ -105,7 +101,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -154,6 +150,8 @@ func main() {
 	if err := rdb.Ping(context.Background()).Err(); err != nil {
 		log.Fatalf("redis baglanamadi: %v", err)
 	}
+
+	signer := newTokenSigner(os.Getenv("AUTH_SECRET"))
 
 	hub := NewWSHub()
 	startKafkaTradeConsumer(brokers, hub)
@@ -229,10 +227,11 @@ func main() {
 		})
 	})
 
-	mux.HandleFunc("POST /auth/register", registerHandler(db))
-	mux.HandleFunc("POST /auth/login", loginHandler(db))
+	mux.HandleFunc("POST /auth/register", registerHandler(db, signer))
+	mux.HandleFunc("POST /auth/login", loginHandler(db, signer))
 
-	mux.HandleFunc("POST /orders", func(w http.ResponseWriter, r *http.Request) {
+	// user_id govdeden degil token'dan alinir; baskasi adina emir verilemez.
+	mux.HandleFunc("POST /orders", signer.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		var req OrderRequest
 		if err := decodeJSON(w, r, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "gecersiz json"})
@@ -246,7 +245,7 @@ func main() {
 
 		msg := OrderMessage{
 			ID:        newOrderID(),
-			UserID:    req.UserID,
+			UserID:    userIDFrom(r.Context()),
 			Symbol:    req.Symbol,
 			Side:      req.Side,
 			Price:     req.Price,
@@ -275,7 +274,7 @@ func main() {
 
 		log.Printf("order alindi id=%s user=%s symbol=%s side=%s", msg.ID, msg.UserID, msg.Symbol, msg.Side)
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted", "id": msg.ID})
-	})
+	}))
 
 	// GET /trades?symbol=BTC-USD&limit=50&user_id=...
 	mux.HandleFunc("GET /trades", func(w http.ResponseWriter, r *http.Request) {

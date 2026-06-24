@@ -1,11 +1,15 @@
 package main
 
 import (
-	"context"
+	"errors"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
+	"time"
+	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -20,9 +24,32 @@ type AuthResponse struct {
 	UserID      string `json:"user_id"`
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name"`
+	Token       string `json:"token"`
 }
 
-func registerHandler(db *pgxpool.Pool) http.HandlerFunc {
+const (
+	minPasswordLen = 8
+	// bcrypt 72 bayttan sonrasini islemez
+	maxPasswordLen = 72
+	maxNameLen     = 64
+)
+
+var usernameRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]{3,32}$`)
+
+func validateRegister(req RegisterRequest) string {
+	if !usernameRe.MatchString(req.Username) {
+		return "kullanici adi 3-32 karakter olmali (harf, rakam, . _ -)"
+	}
+	if len(req.Password) < minPasswordLen || len(req.Password) > maxPasswordLen {
+		return "sifre 8-72 karakter olmali"
+	}
+	if utf8.RuneCountInString(req.Name) > maxNameLen {
+		return "isim en fazla 64 karakter olabilir"
+	}
+	return ""
+}
+
+func registerHandler(db *pgxpool.Pool, signer *tokenSigner) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req RegisterRequest
 		if err := decodeJSON(w, r, &req); err != nil {
@@ -31,10 +58,9 @@ func registerHandler(db *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		req.Username = strings.TrimSpace(req.Username)
-		if req.Username == "" || len(req.Password) < 4 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": "kullanici adi bos olamaz, sifre en az 4 karakter olmali",
-			})
+		req.Name = strings.TrimSpace(req.Name)
+		if msg := validateRegister(req); msg != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
 			return
 		}
 
@@ -45,14 +71,15 @@ func registerHandler(db *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		var userID string
-		err = db.QueryRow(context.Background(), `
+		err = db.QueryRow(r.Context(), `
 			INSERT INTO users (username, password_hash, display_name)
 			VALUES ($1, $2, $3)
 			RETURNING id
 		`, req.Username, string(hash), req.Name).Scan(&userID)
 
 		if err != nil {
-			if strings.Contains(err.Error(), "unique") {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 				writeJSON(w, http.StatusConflict, map[string]string{"error": "kullanici adi zaten var"})
 				return
 			}
@@ -61,11 +88,16 @@ func registerHandler(db *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, http.StatusCreated, AuthResponse{UserID: userID, Username: req.Username, DisplayName: req.Name})
+		writeJSON(w, http.StatusCreated, AuthResponse{
+			UserID:      userID,
+			Username:    req.Username,
+			DisplayName: req.Name,
+			Token:       signer.Issue(userID, time.Now()),
+		})
 	}
 }
 
-func loginHandler(db *pgxpool.Pool) http.HandlerFunc {
+func loginHandler(db *pgxpool.Pool, signer *tokenSigner) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req RegisterRequest
 		if err := decodeJSON(w, r, &req); err != nil {
@@ -75,7 +107,13 @@ func loginHandler(db *pgxpool.Pool) http.HandlerFunc {
 
 		var userID, hash string
 		var displayName *string
-		err := db.QueryRow(context.Background(), `
+		req.Username = strings.TrimSpace(req.Username)
+		if req.Username == "" || len(req.Password) == 0 || len(req.Password) > maxPasswordLen {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "kullanici adi veya sifre yanlis"})
+			return
+		}
+
+		err := db.QueryRow(r.Context(), `
 			SELECT id, password_hash, display_name FROM users WHERE username = $1
 		`, req.Username).Scan(&userID, &hash, &displayName)
 
@@ -93,6 +131,11 @@ func loginHandler(db *pgxpool.Pool) http.HandlerFunc {
 		if displayName != nil {
 			dn = *displayName
 		}
-		writeJSON(w, http.StatusOK, AuthResponse{UserID: userID, Username: req.Username, DisplayName: dn})
+		writeJSON(w, http.StatusOK, AuthResponse{
+			UserID:      userID,
+			Username:    req.Username,
+			DisplayName: dn,
+			Token:       signer.Issue(userID, time.Now()),
+		})
 	}
 }
