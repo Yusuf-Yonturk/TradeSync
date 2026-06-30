@@ -144,7 +144,10 @@ func updateKline(ctx context.Context, rdb *redis.Client, t TradeEvent) {
 			Volume: t.Quantity,
 		}
 	} else if err == nil {
-		json.Unmarshal([]byte(val), &k)
+		if err := json.Unmarshal([]byte(val), &k); err != nil {
+			log.Printf("kline parse hatasi: %v", err)
+			return
+		}
 		if t.Price > k.High {
 			k.High = t.Price
 		}
@@ -158,8 +161,14 @@ func updateKline(ctx context.Context, rdb *redis.Client, t TradeEvent) {
 		return
 	}
 
-	b, _ := json.Marshal(k)
-	rdb.HSet(ctx, key, field, b)
+	b, err := json.Marshal(k)
+	if err != nil {
+		log.Printf("kline marshal hatasi: %v", err)
+		return
+	}
+	if err := rdb.HSet(ctx, key, field, b).Err(); err != nil {
+		log.Printf("kline yazma hatasi: %v", err)
+	}
 }
 
 func envOr(key, fallback string) string {
