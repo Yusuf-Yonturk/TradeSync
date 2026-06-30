@@ -2,13 +2,17 @@ services:
   kafka:
     image: apache/kafka:3.9.0
     container_name: tradesync-kafka
+    # Altyapi portlari sadece localhost'a acilir; docker 0.0.0.0'a baglarsa guvenlik duvarini da asar.
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:29092"
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      # PLAINTEXT konteynerler arasi, EXTERNAL host uzerinden (localhost:9092) erisim icin
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       CLUSTER_ID: "5L6g3nShT-eMCtK--X86sw"
@@ -17,12 +21,20 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
     volumes:
       - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --list --bootstrap-server kafka:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
 
   kafka-setup:
     image: apache/kafka:3.9.0
     container_name: tradesync-kafka-setup
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     command: >
       bash -c "
       echo 'Waiting for kafka...';
@@ -37,7 +49,7 @@ services:
     image: postgres:16
     container_name: tradesync-postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_DB: tradesync
       POSTGRES_USER: ts_user
@@ -45,14 +57,26 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ts_user -d tradesync"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     container_name: tradesync-redis
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
 
   gateway:
     image: golang:alpine
@@ -67,11 +91,16 @@ services:
       - KAFKA_BROKERS=kafka:9092
       - POSTGRES_DSN=postgres://ts_user:ts_pass@postgres:5432/tradesync
       - REDIS_ADDR=redis:6379
+      # bos birakilirsa gateway her acilista gecici anahtar uretir
+      - AUTH_SECRET=${AUTH_SECRET:-}
     depends_on:
-      - kafka
-      - postgres
-      - redis
-      - kafka-setup
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
     command: go run .
 
   engine:
@@ -84,8 +113,9 @@ services:
     environment:
       - KAFKA_BROKERS=kafka:9092
     depends_on:
-      - kafka
-      - kafka-setup
+      kafka-setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
     command: go run .
 
   processor:
@@ -100,10 +130,13 @@ services:
       - POSTGRES_DSN=postgres://ts_user:ts_pass@postgres:5432/tradesync
       - REDIS_ADDR=redis:6379
     depends_on:
-      - kafka
-      - postgres
-      - redis
-      - kafka-setup
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
     command: go run .
 
   marketmaker:
@@ -115,8 +148,10 @@ services:
       - go_mod_cache:/go/pkg/mod
     environment:
       - GATEWAY_URL=http://gateway:8072
+      - MM_PASSWORD=${MM_PASSWORD:-marketmaker-dev}
     depends_on:
       - gateway
+    restart: unless-stopped
     command: go run .
 
 volumes:
