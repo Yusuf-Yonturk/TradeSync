@@ -1,9 +1,8 @@
 module tradesync/gateway
 
-go 1.23.0
+go 1.25.0
 
 require (
-	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/redis/go-redis/v9 v9.20.0
