@@ -345,7 +345,7 @@ func queryTradesByUser(ctx context.Context, db *pgxpool.Pool, userID string, sym
 		Close()
 	}
 	var err error
-	
+
 	if symbol != "" {
 		rows, err = db.Query(ctx, `
 			SELECT id, buy_order_id, sell_order_id, buyer_id, seller_id, symbol, price, quantity, traded_at
@@ -363,7 +363,7 @@ func queryTradesByUser(ctx context.Context, db *pgxpool.Pool, userID string, sym
 			LIMIT $2
 		`, userID, limit)
 	}
-	
+
 	if err != nil {
 		return nil, err
 	}
