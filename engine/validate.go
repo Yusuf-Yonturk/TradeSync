@@ -9,6 +9,10 @@ func validateIncoming(in IncomingOrder) error {
 		return errors.New("id bos")
 	case in.Symbol == "":
 		return errors.New("symbol bos")
+	case in.Type == typeCancel:
+		return nil
+	case in.Type != "":
+		return errors.New("bilinmeyen type")
 	case in.Side != "BUY" && in.Side != "SELL":
 		return errors.New("gecersiz side")
 	case in.Price <= 0:

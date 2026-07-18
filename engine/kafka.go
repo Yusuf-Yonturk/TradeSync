@@ -10,12 +10,15 @@ import (
 )
 
 const (
-	topicOrders = "orders"
-	topicTrades = "trades"
+	topicOrders       = "orders"
+	topicTrades       = "trades"
+	topicOrderUpdates = "order-updates"
 )
 
 // Kafka'dan gelen ham emir
 type IncomingOrder struct {
+	// bos ise yeni emir, "CANCEL" ise iptal
+	Type      string    `json:"type,omitempty"`
 	ID        string    `json:"id"`
 	UserID    string    `json:"user_id"`
 	Symbol    string    `json:"symbol"`
@@ -73,5 +76,25 @@ func publishTrades(ctx context.Context, producer *kgo.Client, trades []OutgoingT
 	// Tampon bos olana kadar bekle
 	if err := producer.Flush(ctx); err != nil {
 		log.Printf("flush hatasi: %v", err)
+	}
+}
+
+func publishOrderUpdates(ctx context.Context, producer *kgo.Client, updates []OrderUpdate) {
+	for _, u := range updates {
+		data, err := json.Marshal(u)
+		if err != nil {
+			log.Printf("order update marshal hatasi: %v", err)
+			continue
+		}
+		record := &kgo.Record{
+			Topic: topicOrderUpdates,
+			Key:   []byte(u.Symbol),
+			Value: data,
+		}
+		producer.Produce(ctx, record, func(_ *kgo.Record, err error) {
+			if err != nil {
+				log.Printf("order update publish hatasi: %v", err)
+			}
+		})
 	}
 }

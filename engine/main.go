@@ -59,12 +59,13 @@ func main() {
 			}
 
 			book := getOrCreateBook(books, incoming.Symbol)
-			order := toOrder(incoming)
-			trades := book.AddOrder(order)
+			res := process(book, incoming)
+			trades := res.trades
 
 			// Her order eklendiğinde tahtanın güncel halini kafka'ya bas
 			snapshot := book.Snapshot(incoming.Symbol, 15)
 			publishDepth(ctx, producer, snapshot)
+			publishOrderUpdates(ctx, producer, res.updates)
 
 			if len(trades) == 0 {
 				return
