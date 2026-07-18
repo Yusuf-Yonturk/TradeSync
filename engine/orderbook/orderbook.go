@@ -9,6 +9,9 @@ import (
 type OrderBook struct {
 	Buys  *BuyHeap
 	Sells *SellHeap
+
+	// defterde bekleyen emirler, id ile iptal ve durum sorgusu icin
+	resting map[string]*Order
 }
 
 type Trade struct {
@@ -68,8 +71,9 @@ func NewOrderBook() *OrderBook {
 	heap.Init(sells)
 
 	return &OrderBook{
-		Buys:  buys,
-		Sells: sells,
+		Buys:    buys,
+		Sells:   sells,
+		resting: make(map[string]*Order),
 	}
 }
 
@@ -143,7 +147,25 @@ func (ob *OrderBook) CancelOrder(order *Order) bool {
 		RemoveFromSellHeap(ob.Sells, order)
 	}
 	order.Status = Cancelled
+	delete(ob.resting, order.ID)
 	return true
+}
+
+// Defterde bekleyen emri dondurur; dolmus ya da iptal edilmisse nil.
+func (ob *OrderBook) Get(id string) *Order {
+	return ob.resting[id]
+}
+
+// Emri id ile iptal eder. Emir yoksa ya da baska kullaniciya aitse nil doner.
+func (ob *OrderBook) CancelByID(id, userID string) *Order {
+	order := ob.resting[id]
+	if order == nil || order.UserID != userID {
+		return nil
+	}
+	if !ob.CancelOrder(order) {
+		return nil
+	}
+	return order
 }
 
 // Emri book'a ekle, eşleşen trade'leri döndür
@@ -162,12 +184,14 @@ func (ob *OrderBook) AddOrder(order *Order) []Trade {
 
 			if best.IsFilled() {
 				heap.Pop(ob.Sells)
+				delete(ob.resting, best.ID)
 			}
 			if order.IsFilled() {
 				return trades
 			}
 		}
 		heap.Push(ob.Buys, order)
+		ob.resting[order.ID] = order
 		return trades
 	}
 
@@ -182,11 +206,13 @@ func (ob *OrderBook) AddOrder(order *Order) []Trade {
 
 		if best.IsFilled() {
 			heap.Pop(ob.Buys)
+			delete(ob.resting, best.ID)
 		}
 		if order.IsFilled() {
 			return trades
 		}
 	}
 	heap.Push(ob.Sells, order)
+	ob.resting[order.ID] = order
 	return trades
 }

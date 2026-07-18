@@ -170,3 +170,58 @@ func TestCancelledOrderDoesNotMatch(t *testing.T) {
 		t.Error("iptal edilen emirle eslesmemeli")
 	}
 }
+
+func TestGetTracksRestingOrders(t *testing.T) {
+	ob := NewOrderBook()
+	sell := &Order{ID: "s1", UserID: "u1", Symbol: "BTC-USD", Side: Sell, Price: 100, Quantity: 5, Timestamp: time.Now()}
+	ob.AddOrder(sell)
+
+	if ob.Get("s1") != sell {
+		t.Fatal("bekleyen emir bulunamadi")
+	}
+
+	// kismi dolum: defterde kalmali
+	ob.AddOrder(&Order{ID: "b1", UserID: "u2", Symbol: "BTC-USD", Side: Buy, Price: 100, Quantity: 2, Timestamp: time.Now()})
+	if got := ob.Get("s1"); got == nil || got.RemainingQty() != 3 {
+		t.Fatalf("kismi dolumdan sonra kalan 3 bekleniyordu, gelen %+v", got)
+	}
+	if ob.Get("b1") != nil {
+		t.Error("tamamen dolan gelen emir defterde gorunuyor")
+	}
+
+	// tam dolum: defterden dusmeli
+	ob.AddOrder(&Order{ID: "b2", UserID: "u2", Symbol: "BTC-USD", Side: Buy, Price: 100, Quantity: 3, Timestamp: time.Now()})
+	if ob.Get("s1") != nil {
+		t.Error("dolan emir hala defterde")
+	}
+}
+
+func TestCancelByID(t *testing.T) {
+	ob := NewOrderBook()
+	ob.AddOrder(&Order{ID: "b1", UserID: "u1", Symbol: "BTC-USD", Side: Buy, Price: 90, Quantity: 5, Timestamp: time.Now()})
+	ob.AddOrder(&Order{ID: "b2", UserID: "u1", Symbol: "BTC-USD", Side: Buy, Price: 95, Quantity: 5, Timestamp: time.Now()})
+
+	if ob.CancelByID("b1", "baskasi") != nil {
+		t.Fatal("baska kullanicinin emri iptal edildi")
+	}
+	if ob.CancelByID("yok", "u1") != nil {
+		t.Fatal("olmayan emir iptal edildi")
+	}
+
+	got := ob.CancelByID("b1", "u1")
+	if got == nil || got.Status != Cancelled {
+		t.Fatalf("iptal bekleniyordu, gelen %+v", got)
+	}
+	if ob.Get("b1") != nil || ob.Buys.Len() != 1 {
+		t.Errorf("iptal edilen emir defterde kaldi, len=%d", ob.Buys.Len())
+	}
+	if ob.CancelByID("b1", "u1") != nil {
+		t.Error("ayni emir iki kez iptal edildi")
+	}
+
+	// iptal edilen emir artik eslesmemeli
+	trades := ob.AddOrder(&Order{ID: "s1", UserID: "u2", Symbol: "BTC-USD", Side: Sell, Price: 90, Quantity: 10, Timestamp: time.Now()})
+	if len(trades) != 1 || trades[0].BuyOrderID != "b2" {
+		t.Errorf("sadece b2 ile eslesme bekleniyordu, gelen %+v", trades)
+	}
+}
