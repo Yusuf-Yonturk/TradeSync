@@ -16,7 +16,17 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-const topicTrades = "trades"
+const (
+	topicTrades       = "trades"
+	topicOrderUpdates = "order-updates"
+)
+
+// Engine'in yayinladigi emir durumu
+type OrderUpdate struct {
+	ID     string `json:"id"`
+	UserID string `json:"user_id"`
+	Status string `json:"status"`
+}
 
 type TradeEvent struct {
 	BuyOrderID  string    `json:"buy_order_id"`
@@ -65,7 +75,7 @@ func main() {
 	consumer, err := kgo.NewClient(
 		kgo.SeedBrokers(brokers...),
 		kgo.ConsumerGroup("processor-group"),
-		kgo.ConsumeTopics(topicTrades, "depth"),
+		kgo.ConsumeTopics(topicTrades, "depth", topicOrderUpdates),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
 	)
 	if err != nil {
@@ -101,6 +111,11 @@ func main() {
 				return
 			}
 
+			if r.Topic == topicOrderUpdates {
+				applyOrderUpdate(ctx, rdb, r.Value)
+				return
+			}
+
 			var trade TradeEvent
 			if err := json.Unmarshal(r.Value, &trade); err != nil {
 				log.Printf("trade parse hatasi: %v", err)
@@ -125,6 +140,37 @@ func saveTrade(ctx context.Context, db *pgxpool.Pool, t TradeEvent) error {
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`, t.BuyOrderID, t.SellOrderID, t.BuyerID, t.SellerID, t.Symbol, t.Price, t.Quantity, t.Timestamp)
 	return err
+}
+
+// Acik emirler kullanici basina bir redis hash'inde tutulur: orders:<user_id> -> id -> emir.
+// Dolan ya da iptal edilen emir listeden silinir.
+func applyOrderUpdate(ctx context.Context, rdb *redis.Client, raw []byte) {
+	var u OrderUpdate
+	if err := json.Unmarshal(raw, &u); err != nil {
+		log.Printf("order update parse hatasi: %v", err)
+		return
+	}
+	if u.ID == "" || u.UserID == "" {
+		return
+	}
+
+	ctxTimeout, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	key := "orders:" + u.UserID
+	var err error
+	if isOpenStatus(u.Status) {
+		err = rdb.HSet(ctxTimeout, key, u.ID, raw).Err()
+	} else {
+		err = rdb.HDel(ctxTimeout, key, u.ID).Err()
+	}
+	if err != nil {
+		log.Printf("acik emir yazma hatasi: %v", err)
+	}
+}
+
+func isOpenStatus(status string) bool {
+	return status == "OPEN" || status == "PARTIALLY_FILLED"
 }
 
 func updateKline(ctx context.Context, rdb *redis.Client, t TradeEvent) {
