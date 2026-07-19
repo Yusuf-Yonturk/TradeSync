@@ -100,7 +100,7 @@ func newOrderID() string {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -229,6 +229,9 @@ func main() {
 
 	mux.HandleFunc("POST /auth/register", registerHandler(db, signer))
 	mux.HandleFunc("POST /auth/login", loginHandler(db, signer))
+
+	mux.HandleFunc("GET /orders", signer.requireAuth(listOrdersHandler(rdb)))
+	mux.HandleFunc("DELETE /orders/{id}", signer.requireAuth(cancelOrderHandler(rdb, producer)))
 
 	// user_id govdeden degil token'dan alinir; baskasi adina emir verilemez.
 	mux.HandleFunc("POST /orders", signer.requireAuth(func(w http.ResponseWriter, r *http.Request) {
