@@ -1,38 +1,47 @@
 import { useState, useEffect, useCallback } from 'react';
 import { formatTime, formatPrice, formatQty } from '../../utils/format';
-import { fetchOrders, cancelOrder } from '../../api';
+import { fetchOrders, cancelOrder, AuthError } from '../../api';
 import './TradeList.css';
 
-export default function TradeListPanel({ trades, user, market }) {
+// Emirler asenkron işlendiği için liste sekme açıkken bu aralıkla yenilenir
+const ORDERS_REFRESH_MS = 3000;
+
+export default function TradeListPanel({ trades, user, market, onSessionExpired }) {
   const [tab, setTab] = useState("ALL");
   const [orders, setOrders] = useState([]);
   const [loadingOrders, setLoadingOrders] = useState(false);
 
   // Açık emirleri çek — sadece "EMİRLERİM" sekmesindeyken
-  const loadOrders = useCallback(async () => {
-    if (!user?.user_id) return;
-    setLoadingOrders(true);
+  const loadOrders = useCallback(async (silent = false) => {
+    if (!user?.token) return;
+    if (!silent) setLoadingOrders(true);
     try {
-      const data = await fetchOrders(user.user_id, market);
+      const data = await fetchOrders(user.token, market);
       // API array döndürürse kullan, yoksa boş dizi
       setOrders(Array.isArray(data) ? data : []);
-    } catch {
-      setOrders([]);
+    } catch (err) {
+      if (err instanceof AuthError) onSessionExpired?.();
+      // arka plan yenilemesi başarısız olursa eldeki listeyi koru
+      if (!silent) setOrders([]);
     } finally {
-      setLoadingOrders(false);
+      if (!silent) setLoadingOrders(false);
     }
-  }, [user, market]);
+  }, [user, market, onSessionExpired]);
 
   useEffect(() => {
-    if (tab === "ORDERS") loadOrders();
+    if (tab !== "ORDERS") return;
+    loadOrders();
+    const timer = setInterval(() => loadOrders(true), ORDERS_REFRESH_MS);
+    return () => clearInterval(timer);
   }, [tab, loadOrders]);
 
   const handleCancel = async (orderId) => {
     try {
-      await cancelOrder(orderId);
+      await cancelOrder(orderId, user.token);
       setOrders(prev => prev.filter(o => o.id !== orderId));
     } catch (err) {
       alert("İptal edilemedi: " + err.message);
+      if (err instanceof AuthError) onSessionExpired?.();
     }
   };
 
@@ -119,7 +128,7 @@ export default function TradeListPanel({ trades, user, market }) {
                   {o.side === "BUY" ? "AL" : "SAT"}
                 </span>
                 <span>{formatPrice(o.price)}</span>
-                <span>{formatQty(o.quantity)}</span>
+                <span>{formatQty(o.remaining ?? o.quantity)}</span>
                 <button
                   className="cancel-btn"
                   onClick={() => handleCancel(o.id)}

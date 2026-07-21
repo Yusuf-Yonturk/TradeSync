@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useMarketData } from "./hooks/useMarketData";
 import AuthScreen from "./components/AuthScreen/AuthScreen";
 import TopBar from "./components/TopBar/TopBar";
@@ -33,10 +33,11 @@ export default function App() {
     localStorage.setItem("ts_user", JSON.stringify(userData));
   };
 
-  const handleLogout = () => {
+  // Alt bileşenlerin effect'leri her render'da yeniden kurulmasın diye sabit referans
+  const handleLogout = useCallback(() => {
     setUser(null);
     localStorage.removeItem("ts_user");
-  };
+  }, []);
 
   if (!user) {
     return <AuthScreen onLoginSuccess={handleLogin} />;
@@ -61,7 +62,7 @@ export default function App() {
         <PriceChart market={market} klines={klines} latestTrade={trades[0]} />
         <div className="right-col">
           <OrderForm user={user} market={market} depth={depth} balances={balances} onSessionExpired={handleLogout} />
-          <TradeListPanel trades={trades} user={user} market={market} />
+          <TradeListPanel trades={trades} user={user} market={market} onSessionExpired={handleLogout} />
         </div>
       </div>
 

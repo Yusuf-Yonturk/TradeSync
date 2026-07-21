@@ -72,24 +72,29 @@ export async function submitOrder(order, token) {
 }
 
 /**
- * Kullanıcının açık (bekleyen) emirlerini getirir.
- * user_id ile filtreleme yapar.
+ * Giriş yapan kullanıcının açık (bekleyen) emirlerini getirir.
  */
-export async function fetchOrders(userId, symbol = "") {
-  const params = new URLSearchParams({ user_id: userId });
+export async function fetchOrders(token, symbol = "") {
+  const params = new URLSearchParams();
   if (symbol) params.append("symbol", symbol);
-  const res = await fetch(`${BASE}/orders?${params}`);
+  const res = await fetch(`${BASE}/orders?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) throw new AuthError("Oturum süresi doldu");
   if (!res.ok) throw new Error("emirler alinamadi");
   return res.json();
 }
 
 /**
- * Belirli bir emiri iptal eder.
+ * Belirli bir emiri iptal eder. İptal asenkrondur; emir bu arada dolmuş olabilir.
  */
-export async function cancelOrder(orderId) {
-  const res = await fetch(`${BASE}/orders/${orderId}`, {
+export async function cancelOrder(orderId, token) {
+  const res = await fetch(`${BASE}/orders/${encodeURIComponent(orderId)}`, {
     method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error("emir iptal edilemedi");
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) throw new AuthError(data.error || "Oturum süresi doldu");
+  if (!res.ok) throw new Error(data.error || "emir iptal edilemedi");
+  return data;
 }
