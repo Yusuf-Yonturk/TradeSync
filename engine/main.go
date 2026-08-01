@@ -6,16 +6,20 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"tradesync/engine/orderbook"
 )
 
-func main() {
-	brokers := []string{envOr("KAFKA_BROKERS", "localhost:9092")}
+const offsetGroup = "engine-group"
 
-	consumer, err := newKafkaClient(brokers, "engine-group")
+func main() {
+	brokers := strings.Split(envOr("KAFKA_BROKERS", "localhost:9092"), ",")
+
+	consumer, err := newKafkaClient(brokers)
 	if err != nil {
 		log.Fatalf("consumer olusturulamadi: %v", err)
 	}
@@ -27,11 +31,25 @@ func main() {
 	}
 	defer producer.Close()
 
-	// Her symbol icin ayri book
-	books := make(map[string]*orderbook.OrderBook)
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Defter bellekte tutuldugu icin her acilista orders topic'i bastan okunur.
+	// Daha once islenmis kayitlar (offset < committed) sadece deftere uygulanir,
+	// sonuclari tekrar yayinlanmaz.
+	offsets := kadm.NewClient(consumer)
+	committed, err := fetchCommitted(ctx, offsets)
+	if err != nil {
+		log.Fatalf("islenmis offsetler okunamadi: %v", err)
+	}
+	if len(committed) > 0 {
+		log.Printf("defter yeniden kuruluyor, islenmis offsetler=%v", committed)
+	}
+
+	// Her symbol icin ayri book
+	books := make(map[string]*orderbook.OrderBook)
+	replayed := 0
+	rebuilding := len(committed) > 0
 
 	log.Println("engine basliyor")
 
@@ -47,19 +65,36 @@ func main() {
 			log.Printf("fetch hatasi topic=%s partition=%d: %v", t, p, err)
 		})
 
+		// bu turda canli islenen kayitlarin bir sonraki offsetleri
+		processed := make(map[int32]int64)
+
 		fetches.EachRecord(func(r *kgo.Record) {
+			live := isLive(committed, r.Partition, r.Offset)
+			if live {
+				processed[r.Partition] = r.Offset + 1
+			} else {
+				replayed++
+			}
+
 			var incoming IncomingOrder
 			if err := json.Unmarshal(r.Value, &incoming); err != nil {
-				log.Printf("order parse hatasi: %v", err)
+				if live {
+					log.Printf("order parse hatasi: %v", err)
+				}
 				return
 			}
 			if err := validateIncoming(incoming); err != nil {
-				log.Printf("gecersiz order atlandi id=%s: %v", incoming.ID, err)
+				if live {
+					log.Printf("gecersiz order atlandi id=%s: %v", incoming.ID, err)
+				}
 				return
 			}
 
 			book := getOrCreateBook(books, incoming.Symbol)
 			res := process(book, incoming)
+			if !live {
+				return
+			}
 			trades := res.trades
 
 			// Her order eklendiğinde tahtanın güncel halini kafka'ya bas
@@ -76,7 +111,33 @@ func main() {
 
 			log.Printf("eslesti symbol=%s trades=%d", incoming.Symbol, len(trades))
 		})
+
+		if rebuilding && len(processed) > 0 {
+			rebuilding = false
+			log.Printf("defter yeniden kuruldu, %d eski kayit uygulandi", replayed)
+		}
+
+		if len(processed) == 0 {
+			continue
+		}
+		// Sonuclar kafka'ya ulasmadan offset ilerletilmez; aksi halde cokme sonrasi kayip olur.
+		if err := producer.Flush(ctx); err != nil {
+			log.Printf("flush hatasi, offset ilerletilmedi: %v", err)
+			continue
+		}
+		if err := commitProcessed(ctx, offsets, processed); err != nil {
+			log.Printf("offset kayit hatasi: %v", err)
+			continue
+		}
+		for p, next := range processed {
+			committed[p] = next
+		}
 	}
+}
+
+// Kayit daha once islenmemisse true doner.
+func isLive(committed map[int32]int64, partition int32, offset int64) bool {
+	return offset >= committed[partition]
 }
 
 func getOrCreateBook(books map[string]*orderbook.OrderBook, symbol string) *orderbook.OrderBook {

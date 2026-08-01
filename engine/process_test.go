@@ -86,3 +86,56 @@ func TestProcessCancel(t *testing.T) {
 		t.Errorf("iptal edilen emir eslesti: %+v", res.trades)
 	}
 }
+
+func TestIsLive(t *testing.T) {
+	committed := map[int32]int64{0: 5}
+
+	if isLive(committed, 0, 4) {
+		t.Error("offset 4 daha once islenmis, canli sayildi")
+	}
+	if !isLive(committed, 0, 5) {
+		t.Error("offset 5 henuz islenmemis, tekrar sayildi")
+	}
+	// hic offset kaydi olmayan partition bastan canli islenir
+	if !isLive(committed, 1, 0) {
+		t.Error("kaydi olmayan partition tekrar sayildi")
+	}
+}
+
+// Ayni mesajlar bastan uygulandiginda defter ayni duruma gelmeli;
+// yeniden baslatmada defterin geri kurulmasi buna dayanir.
+func TestReplayRebuildsSameBook(t *testing.T) {
+	history := []IncomingOrder{
+		newOrder("s1", "u1", "SELL", 100, 5),
+		newOrder("s2", "u1", "SELL", 101, 5),
+		newOrder("b1", "u2", "BUY", 100, 2),
+		newOrder("b2", "u2", "BUY", 90, 4),
+		{Type: typeCancel, ID: "s2", UserID: "u1", Symbol: "BTC-USD"},
+		newOrder("b3", "u3", "BUY", 95, 1),
+	}
+
+	build := func() *orderbook.OrderBook {
+		book := orderbook.NewOrderBook()
+		for _, in := range history {
+			process(book, in)
+		}
+		return book
+	}
+
+	first, second := build(), build()
+	a, b := first.Snapshot("BTC-USD", 15), second.Snapshot("BTC-USD", 15)
+	if len(a.Bids) != 2 || len(a.Asks) != 1 || a.Asks[0].Quantity != 3 {
+		t.Fatalf("beklenmeyen defter: %+v", a)
+	}
+	if len(a.Bids) != len(b.Bids) || len(a.Asks) != len(b.Asks) {
+		t.Fatalf("tekrar farkli defter uretti: %+v / %+v", a, b)
+	}
+	for i := range a.Bids {
+		if a.Bids[i] != b.Bids[i] {
+			t.Errorf("bid %d farkli: %+v / %+v", i, a.Bids[i], b.Bids[i])
+		}
+	}
+	if second.Get("s2") != nil || second.Get("s1") == nil || second.Get("s1").RemainingQty() != 3 {
+		t.Error("tekrar sonrasi emir durumlari tutmuyor")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -40,13 +41,50 @@ type OutgoingTrade struct {
 	Timestamp   time.Time `json:"timestamp"`
 }
 
-func newKafkaClient(brokers []string, groupID string) (*kgo.Client, error) {
+// Grup uyeligi olmadan topic'i her zaman bastan okur. Nereye kadar islendigi
+// offsetGroup altinda elle saklanir (fetchCommitted / commitProcessed).
+func newKafkaClient(brokers []string) (*kgo.Client, error) {
 	return kgo.NewClient(
 		kgo.SeedBrokers(brokers...),
-		kgo.ConsumerGroup(groupID),
 		kgo.ConsumeTopics(topicOrders),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
 	)
+}
+
+// Partition basina, islenmis son kaydin bir sonraki offsetini doner.
+func fetchCommitted(ctx context.Context, adm *kadm.Client) (map[int32]int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	resp, err := adm.FetchOffsets(ctx, offsetGroup)
+	if err != nil {
+		return nil, err
+	}
+	committed := make(map[int32]int64)
+	for partition, o := range resp[topicOrders] {
+		if o.Err != nil {
+			return nil, o.Err
+		}
+		if o.At > 0 {
+			committed[partition] = o.At
+		}
+	}
+	return committed, nil
+}
+
+func commitProcessed(ctx context.Context, adm *kadm.Client, processed map[int32]int64) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	var offsets kadm.Offsets
+	for partition, next := range processed {
+		offsets.AddOffset(topicOrders, partition, next, -1)
+	}
+	resp, err := adm.CommitOffsets(ctx, offsetGroup, offsets)
+	if err != nil {
+		return err
+	}
+	return resp.Error()
 }
 
 func newKafkaProducer(brokers []string) (*kgo.Client, error) {
