@@ -44,6 +44,7 @@ services:
       /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic depth --bootstrap-server kafka:9092;
       /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic events --bootstrap-server kafka:9092;
       /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic order-updates --bootstrap-server kafka:9092;
+      /opt/kafka/bin/kafka-configs.sh --alter --entity-type topics --entity-name orders --add-config retention.ms=-1 --bootstrap-server kafka:9092;
       echo 'Topics created successfully';"
 
   postgres:
