@@ -15,14 +15,16 @@ type OrderBook struct {
 }
 
 type Trade struct {
-	BuyOrderID  string    `json:"buy_order_id"`
-	SellOrderID string    `json:"sell_order_id"`
-	BuyerID     string    `json:"buyer_id"`
-	SellerID    string    `json:"seller_id"`
-	Symbol      string    `json:"symbol"`
-	Price       int64     `json:"price"`
-	Quantity    int64     `json:"quantity"`
-	Timestamp   time.Time `json:"timestamp"`
+	BuyOrderID  string `json:"buy_order_id"`
+	SellOrderID string `json:"sell_order_id"`
+	BuyerID     string `json:"buyer_id"`
+	SellerID    string `json:"seller_id"`
+	Symbol      string `json:"symbol"`
+	Price       int64  `json:"price"`
+	// Alis emrinin limit fiyati; islem daha ucuza gerceklesirse fark aliciya iade edilir.
+	BuyLimit  int64     `json:"buy_limit"`
+	Quantity  int64     `json:"quantity"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 type DepthLevel struct {
@@ -58,6 +60,7 @@ func executeTrade(buy, sell *Order, price int64) Trade {
 		SellerID:    sell.UserID,
 		Symbol:      buy.Symbol,
 		Price:       price,
+		BuyLimit:    buy.Price,
 		Quantity:    qty,
 		Timestamp:   time.Now(),
 	}
@@ -168,6 +171,30 @@ func (ob *OrderBook) CancelByID(id, userID string) *Order {
 	return order
 }
 
+// Defterde bekleyen butun emirler; sira garanti edilmez.
+func (ob *OrderBook) Orders() []*Order {
+	out := make([]*Order, 0, len(ob.resting))
+	for _, o := range ob.resting {
+		out = append(out, o)
+	}
+	return out
+}
+
+// Anlik goruntuden gelen emri eslestirmeden deftere koyar.
+func (ob *OrderBook) Restore(order *Order) {
+	if order.Side == Buy {
+		heap.Push(ob.Buys, order)
+	} else {
+		heap.Push(ob.Sells, order)
+	}
+	ob.resting[order.ID] = order
+}
+
+// Kullanici kendi bekleyen emriyle eslesecekse gelen emrin kalani iptal edilir.
+func selfTrade(incoming, resting *Order) bool {
+	return incoming.PreventSelfTrade && incoming.UserID != "" && incoming.UserID == resting.UserID
+}
+
 // Emri book'a ekle, eşleşen trade'leri döndür
 func (ob *OrderBook) AddOrder(order *Order) []Trade {
 	var trades []Trade
@@ -178,6 +205,10 @@ func (ob *OrderBook) AddOrder(order *Order) []Trade {
 			best := ob.BestSell()
 			if !CanMatch(order, best) {
 				break
+			}
+			if selfTrade(order, best) {
+				order.Status = Cancelled
+				return trades
 			}
 			trade := executeTrade(order, best, best.Price)
 			trades = append(trades, trade)
@@ -200,6 +231,10 @@ func (ob *OrderBook) AddOrder(order *Order) []Trade {
 		best := ob.BestBuy()
 		if !CanMatch(best, order) {
 			break
+		}
+		if selfTrade(order, best) {
+			order.Status = Cancelled
+			return trades
 		}
 		trade := executeTrade(best, order, best.Price)
 		trades = append(trades, trade)

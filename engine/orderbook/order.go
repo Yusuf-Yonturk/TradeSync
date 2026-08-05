@@ -29,6 +29,10 @@ type Order struct {
 	Status    OrderStatus
 	Timestamp time.Time
 
+	// Eski kayitlar bu kural olmadan islendi; yeniden oynatmada ayni sonucu
+	// vermek icin kural emir bazinda acilir.
+	PreventSelfTrade bool
+
 	HeapIndex int
 }
 

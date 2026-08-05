@@ -2,6 +2,15 @@ package orderbook
 
 import "container/heap"
 
+// Ayni fiyatta once gelen onceliklidir. Zaman esitse id'ye bakilir ki siralama
+// tam olsun ve anlik goruntuden kurulan defter birebir ayni davransin.
+func earlier(a, b *Order) bool {
+	if !a.Timestamp.Equal(b.Timestamp) {
+		return a.Timestamp.Before(b.Timestamp)
+	}
+	return a.ID < b.ID
+}
+
 type BuyHeap []*Order
 
 func (h BuyHeap) Len() int { return len(h) }
@@ -10,7 +19,7 @@ func (h BuyHeap) Less(i, j int) bool {
 	if h[i].Price != h[j].Price {
 		return h[i].Price > h[j].Price
 	}
-	return h[i].Timestamp.Before(h[j].Timestamp)
+	return earlier(h[i], h[j])
 }
 
 func (h BuyHeap) Swap(i, j int) {
@@ -43,7 +52,7 @@ func (h SellHeap) Less(i, j int) bool {
 	if h[i].Price != h[j].Price {
 		return h[i].Price < h[j].Price
 	}
-	return h[i].Timestamp.Before(h[j].Timestamp)
+	return earlier(h[i], h[j])
 }
 
 func (h SellHeap) Swap(i, j int) {

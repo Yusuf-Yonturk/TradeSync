@@ -27,28 +27,70 @@ type IncomingOrder struct {
 	Price     int64     `json:"price"`
 	Quantity  int64     `json:"quantity"`
 	Timestamp time.Time `json:"timestamp"`
+	// kullanicinin kendi emriyle eslesmesini engelle
+	STP bool `json:"stp,omitempty"`
 }
 
 // Kafka'ya gidecek trade
 type OutgoingTrade struct {
+	// Kaynak kaydin konumundan uretilir; ayni islem tekrar yayinlanirsa id degismez.
+	ID          string    `json:"trade_id"`
 	BuyOrderID  string    `json:"buy_order_id"`
 	SellOrderID string    `json:"sell_order_id"`
 	BuyerID     string    `json:"buyer_id"`
 	SellerID    string    `json:"seller_id"`
 	Symbol      string    `json:"symbol"`
 	Price       int64     `json:"price"`
+	BuyLimit    int64     `json:"buy_limit"`
 	Quantity    int64     `json:"quantity"`
 	Timestamp   time.Time `json:"timestamp"`
 }
 
-// Grup uyeligi olmadan topic'i her zaman bastan okur. Nereye kadar islendigi
-// offsetGroup altinda elle saklanir (fetchCommitted / commitProcessed).
-func newKafkaClient(brokers []string) (*kgo.Client, error) {
-	return kgo.NewClient(
+// Grup uyeligi olmadan okur. Nereye kadar islendigi offsetGroup altinda elle
+// saklanir (fetchCommitted / commitProcessed). start bos ise topic bastan,
+// degilse verilen offsetlerden okunur.
+func newKafkaClient(brokers []string, start map[int32]kgo.Offset) (*kgo.Client, error) {
+	opts := []kgo.Opt{
 		kgo.SeedBrokers(brokers...),
-		kgo.ConsumeTopics(topicOrders),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
-	)
+	}
+	if len(start) == 0 {
+		opts = append(opts, kgo.ConsumeTopics(topicOrders))
+	} else {
+		opts = append(opts, kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{topicOrders: start}))
+	}
+	return kgo.NewClient(opts...)
+}
+
+// Goruntuden kurulan defter icin partition basina okumaya baslanacak yeri doner.
+// Goruntu yoksa nil doner ve topic bastan okunur.
+func startOffsets(ctx context.Context, adm *kadm.Client, position map[int32]int64) (map[int32]kgo.Offset, error) {
+	if len(position) == 0 {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	listed, err := adm.ListStartOffsets(ctx, topicOrders)
+	if err != nil {
+		return nil, err
+	}
+	start := make(map[int32]kgo.Offset)
+	for partition, o := range listed[topicOrders] {
+		if o.Err != nil {
+			return nil, o.Err
+		}
+		next, ok := position[partition]
+		if !ok {
+			start[partition] = kgo.NewOffset().AtStart()
+			continue
+		}
+		if next < o.Offset {
+			log.Printf("UYARI partition=%d: goruntu offset=%d ama topic %d'den basliyor; aradaki emirler kayip", partition, next, o.Offset)
+		}
+		start[partition] = kgo.NewOffset().At(next)
+	}
+	return start, nil
 }
 
 // Partition basina, islenmis son kaydin bir sonraki offsetini doner.

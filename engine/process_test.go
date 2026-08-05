@@ -139,3 +139,41 @@ func TestReplayRebuildsSameBook(t *testing.T) {
 		t.Error("tekrar sonrasi emir durumlari tutmuyor")
 	}
 }
+
+func TestSelfTradeCancelsIncomingRemainder(t *testing.T) {
+	book := orderbook.NewOrderBook()
+	process(book, newOrder("s1", "u2", "SELL", 100, 2))
+	process(book, newOrder("s2", "u1", "SELL", 101, 5))
+
+	in := newOrder("b1", "u1", "BUY", 105, 6)
+	in.STP = true
+	res := process(book, in)
+
+	// once baskasinin emriyle eslesir, kendi emrine gelince durur
+	if len(res.trades) != 1 || res.trades[0].SellOrderID != "s1" || res.trades[0].Quantity != 2 {
+		t.Fatalf("yalniz s1 ile eslesme bekleniyordu: %+v", res.trades)
+	}
+	if res.trades[0].BuyLimit != 105 || res.trades[0].Price != 100 {
+		t.Errorf("limit/fiyat yanlis: %+v", res.trades[0])
+	}
+	u := res.updates[0]
+	if u.ID != "b1" || u.Status != "CANCELLED" || u.FilledQty != 2 || u.Quantity != 6 || u.Price != 105 {
+		t.Errorf("gelen emrin kalani iptal edilmeliydi: %+v", u)
+	}
+	if book.Get("b1") != nil {
+		t.Error("iptal edilen emir defterde kaldi")
+	}
+	if s2 := book.Get("s2"); s2 == nil || s2.RemainingQty() != 5 {
+		t.Error("kullanicinin bekleyen emri degismemeliydi")
+	}
+}
+
+// Kural isaretlenmemis (eski) kayitlarda uygulanmaz; yeniden oynatma eski sonucu vermeli.
+func TestSelfTradeAllowedForLegacyOrders(t *testing.T) {
+	book := orderbook.NewOrderBook()
+	process(book, newOrder("s1", "u1", "SELL", 100, 2))
+	res := process(book, newOrder("b1", "u1", "BUY", 100, 2))
+	if len(res.trades) != 1 {
+		t.Fatalf("eski emirler eslesmeliydi: %+v", res.trades)
+	}
+}

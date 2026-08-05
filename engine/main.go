@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -18,12 +20,8 @@ const offsetGroup = "engine-group"
 
 func main() {
 	brokers := strings.Split(envOr("KAFKA_BROKERS", "localhost:9092"), ",")
-
-	consumer, err := newKafkaClient(brokers)
-	if err != nil {
-		log.Fatalf("consumer olusturulamadi: %v", err)
-	}
-	defer consumer.Close()
+	snapshotPath := os.Getenv("SNAPSHOT_PATH")
+	snapshotEvery := envDuration("SNAPSHOT_INTERVAL", 30*time.Second)
 
 	producer, err := newKafkaProducer(brokers)
 	if err != nil {
@@ -34,22 +32,47 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Defter bellekte tutuldugu icin her acilista orders topic'i bastan okunur.
-	// Daha once islenmis kayitlar (offset < committed) sadece deftere uygulanir,
-	// sonuclari tekrar yayinlanmaz.
-	offsets := kadm.NewClient(consumer)
+	// Defter bellekte tutulur. Acilista varsa diskteki goruntuden, yoksa orders
+	// topic'inin basindan yeniden kurulur. Daha once islenmis kayitlar
+	// (offset < committed) sadece deftere uygulanir, sonuclari tekrar yayinlanmaz.
+	offsets := kadm.NewClient(producer)
 	committed, err := fetchCommitted(ctx, offsets)
 	if err != nil {
 		log.Fatalf("islenmis offsetler okunamadi: %v", err)
 	}
+
+	books := make(map[string]*orderbook.OrderBook)
+	// deftere uygulanmis son kaydin bir sonraki offseti
+	position := make(map[int32]int64)
+
+	if snap := usableSnapshot(snapshotPath, committed); snap != nil {
+		books = restoreBooks(*snap)
+		for p, next := range snap.Offsets {
+			position[p] = next
+		}
+		log.Printf("defter goruntuden kuruldu, emir=%d offsetler=%v", len(snap.Orders), snap.Offsets)
+	}
+
+	start, err := startOffsets(ctx, offsets, position)
+	if err != nil {
+		log.Fatalf("topic offsetleri okunamadi: %v", err)
+	}
+	consumer, err := newKafkaClient(brokers, start)
+	if err != nil {
+		log.Fatalf("consumer olusturulamadi: %v", err)
+	}
+	defer consumer.Close()
+
 	if len(committed) > 0 {
 		log.Printf("defter yeniden kuruluyor, islenmis offsetler=%v", committed)
 	}
 
-	// Her symbol icin ayri book
-	books := make(map[string]*orderbook.OrderBook)
 	replayed := 0
 	rebuilding := len(committed) > 0
+	// canli islenmis ama offseti henuz kaydedilmemis kayitlar
+	pending := make(map[int32]int64)
+	lastSnapshot := time.Now()
+	snapshotDirty := false
 
 	log.Println("engine basliyor")
 
@@ -65,13 +88,15 @@ func main() {
 			log.Printf("fetch hatasi topic=%s partition=%d: %v", t, p, err)
 		})
 
-		// bu turda canli islenen kayitlarin bir sonraki offsetleri
-		processed := make(map[int32]int64)
+		liveSeen := false
 
 		fetches.EachRecord(func(r *kgo.Record) {
 			live := isLive(committed, r.Partition, r.Offset)
+			position[r.Partition] = r.Offset + 1
+			snapshotDirty = true
 			if live {
-				processed[r.Partition] = r.Offset + 1
+				pending[r.Partition] = r.Offset + 1
+				liveSeen = true
 			} else {
 				replayed++
 			}
@@ -98,41 +123,71 @@ func main() {
 			trades := res.trades
 
 			// Her order eklendiğinde tahtanın güncel halini kafka'ya bas
-			snapshot := book.Snapshot(incoming.Symbol, 15)
-			publishDepth(ctx, producer, snapshot)
+			depth := book.Snapshot(incoming.Symbol, 15)
+			publishDepth(ctx, producer, depth)
 			publishOrderUpdates(ctx, producer, res.updates)
 
 			if len(trades) == 0 {
 				return
 			}
 
-			outgoing := toOutgoingTrades(trades)
+			outgoing := toOutgoingTrades(trades, r.Partition, r.Offset)
 			publishTrades(ctx, producer, outgoing)
 
 			log.Printf("eslesti symbol=%s trades=%d", incoming.Symbol, len(trades))
 		})
 
-		if rebuilding && len(processed) > 0 {
+		if rebuilding && liveSeen {
 			rebuilding = false
 			log.Printf("defter yeniden kuruldu, %d eski kayit uygulandi", replayed)
 		}
 
-		if len(processed) == 0 {
-			continue
+		if len(pending) > 0 {
+			// Sonuclar kafka'ya ulasmadan offset ilerletilmez; aksi halde cokme sonrasi kayip olur.
+			if err := producer.Flush(ctx); err != nil {
+				log.Printf("flush hatasi, offset ilerletilmedi: %v", err)
+				continue
+			}
+			if err := commitProcessed(ctx, offsets, pending); err != nil {
+				log.Printf("offset kayit hatasi: %v", err)
+				continue
+			}
+			for p, next := range pending {
+				committed[p] = next
+			}
+			clear(pending)
 		}
-		// Sonuclar kafka'ya ulasmadan offset ilerletilmez; aksi halde cokme sonrasi kayip olur.
-		if err := producer.Flush(ctx); err != nil {
-			log.Printf("flush hatasi, offset ilerletilmedi: %v", err)
-			continue
-		}
-		if err := commitProcessed(ctx, offsets, processed); err != nil {
-			log.Printf("offset kayit hatasi: %v", err)
-			continue
-		}
-		for p, next := range processed {
-			committed[p] = next
+
+		// Buraya gelindiyse defterdeki her seyin sonucu yayinlanmis ve kaydedilmistir.
+		if snapshotPath != "" && snapshotDirty && time.Since(lastSnapshot) >= snapshotEvery {
+			if err := saveSnapshot(snapshotPath, takeSnapshot(books, position)); err != nil {
+				log.Printf("goruntu yazilamadi: %v", err)
+			} else {
+				snapshotDirty = false
+			}
+			lastSnapshot = time.Now()
 		}
 	}
+}
+
+// Diskteki goruntuyu okur; yoksa ya da kullanilamazsa nil doner.
+func usableSnapshot(path string, committed map[int32]int64) *snapshot {
+	if path == "" {
+		return nil
+	}
+	snap, err := loadSnapshot(path)
+	if err != nil {
+		log.Printf("goruntu okunamadi, topic bastan okunacak: %v", err)
+		return nil
+	}
+	if snap == nil {
+		return nil
+	}
+	if !snapshotUsable(*snap, committed) {
+		log.Printf("goruntu kullanilamaz (offsetler=%v, islenmis=%v), topic bastan okunacak", snap.Offsets, committed)
+		return nil
+	}
+	return snap
 }
 
 // Kayit daha once islenmemisse true doner.
@@ -163,19 +218,29 @@ func toOrder(in IncomingOrder) *orderbook.Order {
 		Quantity:  in.Quantity,
 		Status:    orderbook.Open,
 		Timestamp: in.Timestamp,
+
+		PreventSelfTrade: in.STP,
 	}
 }
 
-func toOutgoingTrades(trades []orderbook.Trade) []OutgoingTrade {
+// Islem id'si kaynak kaydin konumundan turetilir: engine cokup ayni kaydi
+// yeniden islerse ayni id cikar ve processor ikinci kez yazmaz.
+func tradeID(partition int32, offset int64, i int) string {
+	return fmt.Sprintf("%d-%d-%d", partition, offset, i)
+}
+
+func toOutgoingTrades(trades []orderbook.Trade, partition int32, offset int64) []OutgoingTrade {
 	out := make([]OutgoingTrade, len(trades))
 	for i, tr := range trades {
 		out[i] = OutgoingTrade{
+			ID:          tradeID(partition, offset, i),
 			BuyOrderID:  tr.BuyOrderID,
 			SellOrderID: tr.SellOrderID,
 			BuyerID:     tr.BuyerID,
 			SellerID:    tr.SellerID,
 			Symbol:      tr.Symbol,
 			Price:       tr.Price,
+			BuyLimit:    tr.BuyLimit,
 			Quantity:    tr.Quantity,
 			Timestamp:   tr.Timestamp,
 		}
@@ -199,6 +264,13 @@ func publishDepth(ctx context.Context, producer *kgo.Client, snap orderbook.Orde
 			log.Printf("depth kafka hatasi: %v", err)
 		}
 	})
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	if d, err := time.ParseDuration(os.Getenv(key)); err == nil && d > 0 {
+		return d
+	}
+	return fallback
 }
 
 func envOr(key, fallback string) string {
