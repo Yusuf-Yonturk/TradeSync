@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -23,30 +22,31 @@ const (
 
 // Engine'in yayinladigi emir durumu
 type OrderUpdate struct {
-	ID     string `json:"id"`
-	UserID string `json:"user_id"`
-	Status string `json:"status"`
+	ID        string `json:"id"`
+	UserID    string `json:"user_id"`
+	Symbol    string `json:"symbol"`
+	Side      string `json:"side"`
+	Price     int64  `json:"price"`
+	Quantity  int64  `json:"quantity"`
+	FilledQty int64  `json:"filled_quantity"`
+	Status    string `json:"status"`
 }
 
 type TradeEvent struct {
+	ID          string    `json:"trade_id"`
 	BuyOrderID  string    `json:"buy_order_id"`
 	SellOrderID string    `json:"sell_order_id"`
 	BuyerID     string    `json:"buyer_id"`
 	SellerID    string    `json:"seller_id"`
 	Symbol      string    `json:"symbol"`
 	Price       int64     `json:"price"`
+	BuyLimit    int64     `json:"buy_limit"`
 	Quantity    int64     `json:"quantity"`
 	Timestamp   time.Time `json:"timestamp"`
 }
 
-type Kline struct {
-	Time   int64 `json:"time"`
-	Open   int64 `json:"open"`
-	High   int64 `json:"high"`
-	Low    int64 `json:"low"`
-	Close  int64 `json:"close"`
-	Volume int64 `json:"volume"`
-}
+// Veritabani hatasinda kaydi atlamak yerine bu aralikla yeniden dener.
+const retryDelay = 2 * time.Second
 
 func main() {
 	brokers := strings.Split(envOr("KAFKA_BROKERS", "localhost:9092"), ",")
@@ -60,6 +60,9 @@ func main() {
 
 	if err := db.Ping(context.Background()); err != nil {
 		log.Fatalf("postgres ping hatasi: %v", err)
+	}
+	if err := applySchema(context.Background(), db); err != nil {
+		log.Fatalf("sema uygulanamadi: %v", err)
 	}
 	log.Println("postgres baglandi")
 
@@ -77,6 +80,8 @@ func main() {
 		kgo.ConsumerGroup("processor-group"),
 		kgo.ConsumeTopics(topicTrades, "depth", topicOrderUpdates),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+		// Offset, kayit veritabanina yazildiktan sonra elle ilerletilir.
+		kgo.DisableAutoCommit(),
 	)
 	if err != nil {
 		log.Fatalf("kafka consumer olusturulamadi: %v", err)
@@ -101,50 +106,77 @@ func main() {
 		})
 
 		fetches.EachRecord(func(r *kgo.Record) {
-			if r.Topic == "depth" {
-				symbol := string(r.Key)
-				ctxTimeout, cancel := context.WithTimeout(ctx, 2*time.Second)
-				defer cancel()
-				if err := rdb.Set(ctxTimeout, "orderbook:"+symbol, r.Value, 0).Err(); err != nil {
-					log.Printf("redis kayit hatasi: %v", err)
-				}
+			if ctx.Err() != nil {
 				return
 			}
-
-			if r.Topic == topicOrderUpdates {
-				applyOrderUpdate(ctx, rdb, r.Value)
-				return
+			switch r.Topic {
+			case "depth":
+				saveDepth(ctx, rdb, r)
+			case topicOrderUpdates:
+				handleOrderUpdate(ctx, db, rdb, r.Value)
+			default:
+				handleTrade(ctx, db, rdb, r.Value)
 			}
-
-			var trade TradeEvent
-			if err := json.Unmarshal(r.Value, &trade); err != nil {
-				log.Printf("trade parse hatasi: %v", err)
-				return
-			}
-
-			if err := saveTrade(ctx, db, trade); err != nil {
-				log.Printf("trade kayit hatasi: %v", err)
-				return
-			}
-
-			updateKline(ctx, rdb, trade)
-
-			log.Printf("trade kaydedildi symbol=%s price=%d qty=%d", trade.Symbol, trade.Price, trade.Quantity)
 		})
+
+		// Kapanirken yarida kalan kayit olabilir; offset ilerletilmez, acilista yeniden islenir.
+		if ctx.Err() != nil {
+			log.Println("processor durdu")
+			return
+		}
+		if err := consumer.CommitUncommittedOffsets(ctx); err != nil {
+			log.Printf("offset kayit hatasi: %v", err)
+		}
 	}
 }
 
-func saveTrade(ctx context.Context, db *pgxpool.Pool, t TradeEvent) error {
-	_, err := db.Exec(ctx, `
-		INSERT INTO trades (buy_order_id, sell_order_id, buyer_id, seller_id, symbol, price, quantity, traded_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, t.BuyOrderID, t.SellOrderID, t.BuyerID, t.SellerID, t.Symbol, t.Price, t.Quantity, t.Timestamp)
-	return err
+// Basarili olana ya da servis kapanana kadar dener. Atlanan bir islem
+// veritabaninda kalici bir eksik olurdu.
+func untilDone(ctx context.Context, what string, fn func() error) {
+	for {
+		err := fn()
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		log.Printf("%s hatasi, yeniden denenecek: %v", what, err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(retryDelay):
+		}
+	}
 }
 
-// Acik emirler kullanici basina bir redis hash'inde tutulur: orders:<user_id> -> id -> emir.
-// Dolan ya da iptal edilen emir listeden silinir.
-func applyOrderUpdate(ctx context.Context, rdb *redis.Client, raw []byte) {
+func saveDepth(ctx context.Context, rdb *redis.Client, r *kgo.Record) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := rdb.Set(ctx, "orderbook:"+string(r.Key), r.Value, 0).Err(); err != nil {
+		log.Printf("redis kayit hatasi: %v", err)
+	}
+}
+
+func handleTrade(ctx context.Context, db *pgxpool.Pool, rdb *redis.Client, raw []byte) {
+	var trade TradeEvent
+	if err := json.Unmarshal(raw, &trade); err != nil {
+		log.Printf("trade parse hatasi: %v", err)
+		return
+	}
+
+	inserted := false
+	untilDone(ctx, "trade kayit", func() error {
+		var err error
+		inserted, err = settleTrade(ctx, db, trade)
+		return err
+	})
+	if !inserted {
+		return
+	}
+
+	updateKline(ctx, rdb, trade)
+	log.Printf("trade kaydedildi symbol=%s price=%d qty=%d", trade.Symbol, trade.Price, trade.Quantity)
+}
+
+func handleOrderUpdate(ctx context.Context, db *pgxpool.Pool, rdb *redis.Client, raw []byte) {
 	var u OrderUpdate
 	if err := json.Unmarshal(raw, &u); err != nil {
 		log.Printf("order update parse hatasi: %v", err)
@@ -154,6 +186,17 @@ func applyOrderUpdate(ctx context.Context, rdb *redis.Client, raw []byte) {
 		return
 	}
 
+	if amount, ok := releaseAmount(u); ok {
+		untilDone(ctx, "bakiye serbest birakma", func() error {
+			return releaseOrder(ctx, db, u.ID, amount)
+		})
+	}
+	applyOrderUpdate(ctx, rdb, u, raw)
+}
+
+// Acik emirler kullanici basina bir redis hash'inde tutulur: orders:<user_id> -> id -> emir.
+// Dolan ya da iptal edilen emir listeden silinir.
+func applyOrderUpdate(ctx context.Context, rdb *redis.Client, u OrderUpdate, raw []byte) {
 	ctxTimeout, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
@@ -171,50 +214,6 @@ func applyOrderUpdate(ctx context.Context, rdb *redis.Client, raw []byte) {
 
 func isOpenStatus(status string) bool {
 	return status == "OPEN" || status == "PARTIALLY_FILLED"
-}
-
-func updateKline(ctx context.Context, rdb *redis.Client, t TradeEvent) {
-	minute := t.Timestamp.Truncate(time.Minute).Unix()
-	key := "klines:" + t.Symbol
-	field := strconv.FormatInt(minute, 10)
-
-	val, err := rdb.HGet(ctx, key, field).Result()
-	var k Kline
-	if err == redis.Nil {
-		k = Kline{
-			Time:   minute,
-			Open:   t.Price,
-			High:   t.Price,
-			Low:    t.Price,
-			Close:  t.Price,
-			Volume: t.Quantity,
-		}
-	} else if err == nil {
-		if err := json.Unmarshal([]byte(val), &k); err != nil {
-			log.Printf("kline parse hatasi: %v", err)
-			return
-		}
-		if t.Price > k.High {
-			k.High = t.Price
-		}
-		if t.Price < k.Low {
-			k.Low = t.Price
-		}
-		k.Close = t.Price
-		k.Volume += t.Quantity
-	} else {
-		log.Printf("kline okuma hatasi: %v", err)
-		return
-	}
-
-	b, err := json.Marshal(k)
-	if err != nil {
-		log.Printf("kline marshal hatasi: %v", err)
-		return
-	}
-	if err := rdb.HSet(ctx, key, field, b).Err(); err != nil {
-		log.Printf("kline yazma hatasi: %v", err)
-	}
 }
 
 func envOr(key, fallback string) string {

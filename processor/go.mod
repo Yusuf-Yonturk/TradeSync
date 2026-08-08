@@ -17,6 +17,11 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/twmb/franz-go/pkg/kmsg v1.13.1 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
-	golang.org/x/sync v0.17.0 // indirect
-	golang.org/x/text v0.29.0 // indirect
+	golang.org/x/crypto v0.53.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
 )
+
+require tradesync/shared v0.0.0
+
+replace tradesync/shared => ../shared
