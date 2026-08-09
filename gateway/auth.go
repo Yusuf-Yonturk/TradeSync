@@ -34,6 +34,13 @@ const (
 	maxNameLen     = 64
 )
 
+// Giris ve kayit uclarindaki deneme sinirlari
+type authLimits struct {
+	loginFailures *rateLimiter
+	registrations *rateLimiter
+	ipHeader      string
+}
+
 var usernameRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]{3,32}$`)
 
 func validateRegister(req RegisterRequest) string {
@@ -49,8 +56,14 @@ func validateRegister(req RegisterRequest) string {
 	return ""
 }
 
-func registerHandler(db *pgxpool.Pool, signer *tokenSigner) http.HandlerFunc {
+func registerHandler(db *pgxpool.Pool, signer *tokenSigner, books *ledger, limits *authLimits) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ip := clientIP(r, limits.ipHeader)
+		if wait := limits.registrations.blockedFor(ip); wait > 0 {
+			tooManyRequests(w, wait)
+			return
+		}
+
 		var req RegisterRequest
 		if err := decodeJSON(w, r, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "gecersiz json"})
@@ -63,6 +76,8 @@ func registerHandler(db *pgxpool.Pool, signer *tokenSigner) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
 			return
 		}
+
+		limits.registrations.add(ip)
 
 		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 		if err != nil {
@@ -88,6 +103,10 @@ func registerHandler(db *pgxpool.Pool, signer *tokenSigner) http.HandlerFunc {
 			return
 		}
 
+		if _, err := books.ensureFunds(r.Context(), userID); err != nil {
+			log.Printf("deneme bakiyesi hatasi: %v", err)
+		}
+
 		writeJSON(w, http.StatusCreated, AuthResponse{
 			UserID:      userID,
 			Username:    req.Username,
@@ -97,8 +116,14 @@ func registerHandler(db *pgxpool.Pool, signer *tokenSigner) http.HandlerFunc {
 	}
 }
 
-func loginHandler(db *pgxpool.Pool, signer *tokenSigner) http.HandlerFunc {
+func loginHandler(db *pgxpool.Pool, signer *tokenSigner, books *ledger, limits *authLimits) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ip := clientIP(r, limits.ipHeader)
+		if wait := limits.loginFailures.blockedFor(ip); wait > 0 {
+			tooManyRequests(w, wait)
+			return
+		}
+
 		var req RegisterRequest
 		if err := decodeJSON(w, r, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "gecersiz json"})
@@ -109,6 +134,7 @@ func loginHandler(db *pgxpool.Pool, signer *tokenSigner) http.HandlerFunc {
 		var displayName *string
 		req.Username = strings.TrimSpace(req.Username)
 		if req.Username == "" || len(req.Password) == 0 || len(req.Password) > maxPasswordLen {
+			limits.loginFailures.add(ip)
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "kullanici adi veya sifre yanlis"})
 			return
 		}
@@ -118,13 +144,21 @@ func loginHandler(db *pgxpool.Pool, signer *tokenSigner) http.HandlerFunc {
 		`, req.Username).Scan(&userID, &hash, &displayName)
 
 		if err != nil {
+			limits.loginFailures.add(ip)
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "kullanici adi veya sifre yanlis"})
 			return
 		}
 
 		if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
+			limits.loginFailures.add(ip)
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "kullanici adi veya sifre yanlis"})
 			return
+		}
+
+		if !books.exempt[userID] {
+			if _, err := books.ensureFunds(r.Context(), userID); err != nil {
+				log.Printf("deneme bakiyesi hatasi: %v", err)
+			}
 		}
 
 		dn := ""

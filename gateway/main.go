@@ -5,21 +5,31 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"tradesync/shared/money"
 )
 
 const topicOrders = "orders"
+
+const (
+	// /klines varsayilan olarak son bir gunun, en fazla bir haftanin mumlarini doner
+	defaultKlines = 1440
+	maxKlines     = 10080
+	// Istemci baglantiyi kesse de kafka yazimi yarida birakilmaz; aksi halde
+	// emir engine'e ulasmisken ayrilan bakiye geri verilebilirdi.
+	produceTimeout = 10 * time.Second
+)
 
 const (
 	maxBodyBytes = 1 << 16
@@ -46,18 +56,8 @@ type OrderMessage struct {
 	Price     int64     `json:"price"`
 	Quantity  int64     `json:"quantity"`
 	Timestamp time.Time `json:"timestamp"`
-}
-
-type TradeRow struct {
-	ID          int64     `json:"id"`
-	BuyOrderID  string    `json:"buy_order_id"`
-	SellOrderID string    `json:"sell_order_id"`
-	BuyerID     string    `json:"buyer_id"`
-	SellerID    string    `json:"seller_id"`
-	Symbol      string    `json:"symbol"`
-	Price       int64     `json:"price"`
-	Quantity    int64     `json:"quantity"`
-	TradedAt    time.Time `json:"traded_at"`
+	// engine kullanicinin kendi emriyle eslesmesini engeller
+	STP bool `json:"stp"`
 }
 
 type Kline struct {
@@ -141,6 +141,9 @@ func main() {
 	if err := db.Ping(context.Background()); err != nil {
 		log.Fatalf("postgres ping hatasi: %v", err)
 	}
+	if err := applySchema(context.Background(), db); err != nil {
+		log.Fatalf("sema uygulanamadi: %v", err)
+	}
 	log.Println("postgres baglandi")
 
 	rdb := redis.NewClient(&redis.Options{
@@ -152,6 +155,26 @@ func main() {
 	}
 
 	signer := newTokenSigner(os.Getenv("AUTH_SECRET"))
+
+	funds, err := parseDemoFunds(envOr("DEMO_FUNDS", defaultDemoFunds))
+	if err != nil {
+		log.Fatalf("DEMO_FUNDS: %v", err)
+	}
+	exempt, err := provisionMarketMakers(context.Background(), db, envOr("MM_USERNAME", "marketmaker"), os.Getenv("MM_PASSWORD"))
+	if err != nil {
+		log.Fatalf("market maker hesaplari hazirlanamadi: %v", err)
+	}
+	if len(exempt) == 0 {
+		log.Println("MM_PASSWORD tanimli degil, bakiye kontrolunden muaf hesap yok")
+	}
+	books := &ledger{db: db, funds: funds, exempt: exempt}
+
+	auth := &authLimits{
+		// ayni adresten 5 dakikada 10 hatali giris, saatte 10 kayit
+		loginFailures: newRateLimiter(10, 5*time.Minute),
+		registrations: newRateLimiter(10, time.Hour),
+		ipHeader:      os.Getenv("CLIENT_IP_HEADER"),
+	}
 
 	hub := NewWSHub()
 	startKafkaTradeConsumer(brokers, hub)
@@ -215,6 +238,9 @@ func main() {
 		sort.Slice(klines, func(i, j int) bool {
 			return klines[i].Time < klines[j].Time
 		})
+		if limit := parseLimit(r.URL.Query().Get("limit"), defaultKlines, maxKlines); len(klines) > limit {
+			klines = klines[len(klines)-limit:]
+		}
 
 		writeJSON(w, http.StatusOK, klines)
 	})
@@ -227,8 +253,12 @@ func main() {
 		})
 	})
 
-	mux.HandleFunc("POST /auth/register", registerHandler(db, signer))
-	mux.HandleFunc("POST /auth/login", loginHandler(db, signer))
+	mux.HandleFunc("POST /auth/register", registerHandler(db, signer, books, auth))
+	mux.HandleFunc("POST /auth/login", loginHandler(db, signer, books, auth))
+
+	mux.HandleFunc("GET /balances", signer.requireAuth(books.balancesHandler()))
+	mux.HandleFunc("GET /trades", tradesHandler(db))
+	mux.HandleFunc("GET /trades/mine", signer.requireAuth(myTradesHandler(db)))
 
 	mux.HandleFunc("GET /orders", signer.requireAuth(listOrdersHandler(rdb)))
 	mux.HandleFunc("DELETE /orders/{id}", signer.requireAuth(cancelOrderHandler(rdb, producer)))
@@ -254,6 +284,7 @@ func main() {
 			Price:     req.Price,
 			Quantity:  req.Quantity,
 			Timestamp: time.Now().UTC(),
+			STP:       true,
 		}
 
 		data, err := json.Marshal(msg)
@@ -262,7 +293,25 @@ func main() {
 			return
 		}
 
-		ctx := r.Context()
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), produceTimeout)
+		defer cancel()
+
+		// Emir engine'e gitmeden once karsiligi bakiyeden ayrilir.
+		asset, amount, ok := money.Reserve(msg.Symbol, msg.Side, msg.Price, msg.Quantity)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "gecersiz emir"})
+			return
+		}
+		if err := books.reserve(ctx, msg.ID, msg.UserID, asset, amount); err != nil {
+			if errors.Is(err, errInsufficient) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "yetersiz " + asset + " bakiyesi"})
+				return
+			}
+			log.Printf("bakiye ayirma hatasi: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "bakiye ayrilamadi"})
+			return
+		}
+
 		record := &kgo.Record{
 			Topic: topicOrders,
 			Key:   []byte(msg.Symbol),
@@ -271,6 +320,9 @@ func main() {
 
 		if err := producer.ProduceSync(ctx, record).FirstErr(); err != nil {
 			log.Printf("kafka yazma hatasi: %v", err)
+			if uerr := books.unreserve(ctx, msg.ID); uerr != nil {
+				log.Printf("bakiye geri verilemedi id=%s: %v", msg.ID, uerr)
+			}
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "kafka yazma hatasi"})
 			return
 		}
@@ -278,39 +330,6 @@ func main() {
 		log.Printf("order alindi id=%s user=%s symbol=%s side=%s", msg.ID, msg.UserID, msg.Symbol, msg.Side)
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted", "id": msg.ID})
 	}))
-
-	// GET /trades?symbol=BTC-USD&limit=50&user_id=...
-	mux.HandleFunc("GET /trades", func(w http.ResponseWriter, r *http.Request) {
-		symbol := r.URL.Query().Get("symbol")
-		limitStr := r.URL.Query().Get("limit")
-		userID := r.URL.Query().Get("user_id")
-
-		limit := 50
-		if limitStr != "" {
-			if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= 500 {
-				limit = n
-			}
-		}
-
-		var rows []TradeRow
-		var err error
-
-		if userID != "" {
-			rows, err = queryTradesByUser(r.Context(), db, userID, symbol, limit)
-		} else if symbol != "" {
-			rows, err = queryTradesBySymbol(r.Context(), db, symbol, limit)
-		} else {
-			rows, err = queryAllTrades(r.Context(), db, limit)
-		}
-
-		if err != nil {
-			log.Printf("trades sorgu hatasi: %v", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "sorgu hatasi"})
-			return
-		}
-
-		writeJSON(w, http.StatusOK, rows)
-	})
 
 	addr := ":8072"
 	log.Printf("gateway basliyor %s", addr)
@@ -324,86 +343,6 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("sunucu hatasi: %v", err)
 	}
-}
-
-func queryTradesBySymbol(ctx context.Context, db *pgxpool.Pool, symbol string, limit int) ([]TradeRow, error) {
-	rows, err := db.Query(ctx, `
-		SELECT id, buy_order_id, sell_order_id, buyer_id, seller_id, symbol, price, quantity, traded_at
-		FROM trades
-		WHERE symbol = $1
-		ORDER BY traded_at DESC
-		LIMIT $2
-	`, symbol, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanTrades(rows)
-}
-
-func queryTradesByUser(ctx context.Context, db *pgxpool.Pool, userID string, symbol string, limit int) ([]TradeRow, error) {
-	var rows interface {
-		Next() bool
-		Scan(...any) error
-		Close()
-	}
-	var err error
-
-	if symbol != "" {
-		rows, err = db.Query(ctx, `
-			SELECT id, buy_order_id, sell_order_id, buyer_id, seller_id, symbol, price, quantity, traded_at
-			FROM trades
-			WHERE (buyer_id = $1 OR seller_id = $1) AND symbol = $2
-			ORDER BY traded_at DESC
-			LIMIT $3
-		`, userID, symbol, limit)
-	} else {
-		rows, err = db.Query(ctx, `
-			SELECT id, buy_order_id, sell_order_id, buyer_id, seller_id, symbol, price, quantity, traded_at
-			FROM trades
-			WHERE buyer_id = $1 OR seller_id = $1
-			ORDER BY traded_at DESC
-			LIMIT $2
-		`, userID, limit)
-	}
-
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanTrades(rows)
-}
-
-func queryAllTrades(ctx context.Context, db *pgxpool.Pool, limit int) ([]TradeRow, error) {
-	rows, err := db.Query(ctx, `
-		SELECT id, buy_order_id, sell_order_id, buyer_id, seller_id, symbol, price, quantity, traded_at
-		FROM trades
-		ORDER BY traded_at DESC
-		LIMIT $1
-	`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanTrades(rows)
-}
-
-func scanTrades(rows interface {
-	Next() bool
-	Scan(...any) error
-}) ([]TradeRow, error) {
-	var result []TradeRow
-	for rows.Next() {
-		var t TradeRow
-		if err := rows.Scan(&t.ID, &t.BuyOrderID, &t.SellOrderID, &t.BuyerID, &t.SellerID, &t.Symbol, &t.Price, &t.Quantity, &t.TradedAt); err != nil {
-			return nil, err
-		}
-		result = append(result, t)
-	}
-	if result == nil {
-		result = []TradeRow{}
-	}
-	return result, nil
 }
 
 func envOr(key, fallback string) string {

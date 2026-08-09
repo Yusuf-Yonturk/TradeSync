@@ -22,3 +22,7 @@ require (
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 )
+
+require tradesync/shared v0.0.0
+
+replace tradesync/shared => ../shared

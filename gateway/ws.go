@@ -105,8 +105,14 @@ func startKafkaTradeConsumer(brokers []string, hub *WSHub) {
 				log.Printf("ws fetch hatasi topic=%s: %v", t, err)
 			})
 			fetches.EachRecord(func(r *kgo.Record) {
-				// r.Value halihazırda trade veya depth JSON'ı, direkt broadcast edebiliriz
-				hub.Broadcast(r.Value)
+				if r.Topic != "trades" {
+					hub.Broadcast(r.Value)
+					return
+				}
+				// trade kaydi kullanici ve emir kimliklerini tasir; yayina kimliksiz hali gider
+				if msg, ok := publicTradeMessage(r.Value); ok {
+					hub.Broadcast(msg)
+				}
 			})
 		}
 	}()
