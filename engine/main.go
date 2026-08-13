@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -77,7 +78,10 @@ func main() {
 	log.Println("engine basliyor")
 
 	for {
-		fetches := consumer.PollFetches(ctx)
+		// Kayit gelmese de dongu ara sira doner ki son durum goruntuye yazilsin.
+		pollCtx, cancelPoll := context.WithTimeout(ctx, snapshotEvery)
+		fetches := consumer.PollFetches(pollCtx)
+		cancelPoll()
 
 		if ctx.Err() != nil {
 			log.Println("engine durdu")
@@ -85,6 +89,9 @@ func main() {
 		}
 
 		fetches.EachError(func(t string, p int32, err error) {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return
+			}
 			log.Printf("fetch hatasi topic=%s partition=%d: %v", t, p, err)
 		})
 
