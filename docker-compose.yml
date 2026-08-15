@@ -44,8 +44,10 @@ services:
       /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic depth --bootstrap-server kafka:9092;
       /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic events --bootstrap-server kafka:9092;
       /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic order-updates --bootstrap-server kafka:9092;
-      /opt/kafka/bin/kafka-configs.sh --alter --entity-type topics --entity-name orders --add-config retention.ms=-1 --bootstrap-server kafka:9092;
+      /opt/kafka/bin/kafka-configs.sh --alter --entity-type topics --entity-name orders --add-config retention.ms=2592000000 --bootstrap-server kafka:9092;
       echo 'Topics created successfully';"
+    # orders 30 gun saklanir: engine defteri diskteki goruntuden kurar, goruntu
+    # kaybolursa bu sure icindeki emirlerden yeniden kurabilir.
 
   postgres:
     image: postgres:16
@@ -80,12 +82,12 @@ services:
     restart: unless-stopped
 
   gateway:
-    image: golang:alpine
+    build:
+      context: .
+      args:
+        SERVICE: gateway
+    image: tradesync-gateway
     container_name: tradesync-gateway
-    working_dir: /app/gateway
-    volumes:
-      - ./:/app
-      - go_mod_cache:/go/pkg/mod
     ports:
       - "8072:8072"
     environment:
@@ -94,6 +96,12 @@ services:
       - REDIS_ADDR=redis:6379
       # bos birakilirsa gateway her acilista gecici anahtar uretir
       - AUTH_SECRET=${AUTH_SECRET:-}
+      # market maker hesaplarini gateway acar ve bakiye kontrolunden muaf tutar
+      - MM_USERNAME=${MM_USERNAME:-marketmaker}
+      - MM_PASSWORD=${MM_PASSWORD:-marketmaker-dev}
+      - DEMO_FUNDS=${DEMO_FUNDS:-USD:100000,BTC:10,ETH:100,SOL:500}
+      # vekil sunucu arkasinda gercek istemci adresini tasiyan baslik (ornegin X-Real-IP)
+      - CLIENT_IP_HEADER=${CLIENT_IP_HEADER:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -102,30 +110,32 @@ services:
       kafka-setup:
         condition: service_completed_successfully
     restart: unless-stopped
-    command: go run .
 
   engine:
-    image: golang:alpine
+    build:
+      context: .
+      args:
+        SERVICE: engine
+    image: tradesync-engine
     container_name: tradesync-engine
-    working_dir: /app/engine
-    volumes:
-      - ./:/app
-      - go_mod_cache:/go/pkg/mod
     environment:
       - KAFKA_BROKERS=kafka:9092
+      # defter buraya yazilir; acilista topic bastan okunmaz
+      - SNAPSHOT_PATH=/data/snapshot.json
+    volumes:
+      - engine_data:/data
     depends_on:
       kafka-setup:
         condition: service_completed_successfully
     restart: unless-stopped
-    command: go run .
 
   processor:
-    image: golang:alpine
+    build:
+      context: .
+      args:
+        SERVICE: processor
+    image: tradesync-processor
     container_name: tradesync-processor
-    working_dir: /app/processor
-    volumes:
-      - ./:/app
-      - go_mod_cache:/go/pkg/mod
     environment:
       - KAFKA_BROKERS=kafka:9092
       - POSTGRES_DSN=postgres://ts_user:ts_pass@postgres:5432/tradesync
@@ -138,25 +148,24 @@ services:
       kafka-setup:
         condition: service_completed_successfully
     restart: unless-stopped
-    command: go run .
 
   marketmaker:
-    image: golang:alpine
+    build:
+      context: .
+      args:
+        SERVICE: marketmaker
+    image: tradesync-marketmaker
     container_name: tradesync-marketmaker
-    working_dir: /app/marketmaker
-    volumes:
-      - ./:/app
-      - go_mod_cache:/go/pkg/mod
     environment:
       - GATEWAY_URL=http://gateway:8072
+      - MM_USERNAME=${MM_USERNAME:-marketmaker}
       - MM_PASSWORD=${MM_PASSWORD:-marketmaker-dev}
     depends_on:
       - gateway
     restart: unless-stopped
-    command: go run .
 
 volumes:
   kafka_data:
   pg_data:
   redis_data:
-  go_mod_cache:
+  engine_data:
