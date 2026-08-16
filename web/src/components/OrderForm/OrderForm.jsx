@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { submitOrder, AuthError } from '../../api';
 import './OrderForm.css';
 
-export default function OrderForm({ user, market, depth, balances, onSessionExpired }) {
+// Piyasa değişince form sıfırlansın diye bu bileşen key={market} ile kullanılır.
+export default function OrderForm({ user, market, depth, balances, onSessionExpired, onOrderPlaced }) {
   const [side, setSide] = useState("BUY");
   const [form, setForm] = useState({ price: "", quantity: "" });
   const [loading, setLoading] = useState(false);
@@ -30,21 +31,11 @@ export default function OrderForm({ user, market, depth, balances, onSessionExpi
     }
   };
 
-  useEffect(() => {
-    // Reset form when market changes
-    setForm({ price: "", quantity: "" });
-  }, [market]);
-
-  useEffect(() => {
-    // Fill best price automatically ONLY if empty
-    if (!form.price) {
-      if (side === "BUY" && depth?.asks?.length > 0) {
-        set("price", formatInputValue(depth.asks[0].price / 10000));
-      } else if (side === "SELL" && depth?.bids?.length > 0) {
-        set("price", formatInputValue(depth.bids[0].price / 10000));
-      }
-    }
-  }, [market, depth, side, form.price]);
+  // Fiyat boşsa tahtadaki en iyi fiyatla doldur
+  const bestPrice = side === "BUY" ? depth?.asks?.[0]?.price : depth?.bids?.[0]?.price;
+  if (!form.price && bestPrice) {
+    setForm(f => ({ ...f, price: formatInputValue(bestPrice / 10000) }));
+  }
 
   const handlePercent = (pct) => {
     if (!form.price) return;
@@ -52,11 +43,11 @@ export default function OrderForm({ user, market, depth, balances, onSessionExpi
     if (price <= 0) return;
 
     if (side === "BUY") {
-      const availableUSD = balances["USD"] * (pct / 100);
+      const availableUSD = (balances["USD"] || 0) * (pct / 100);
       const qty = availableUSD / price;
       set("quantity", qty > 0 ? formatInputValue(qty, true) : "");
     } else {
-      const availableCrypto = balances[crypto] * (pct / 100);
+      const availableCrypto = (balances[crypto] || 0) * (pct / 100);
       const qty = availableCrypto;
       set("quantity", qty > 0 ? formatInputValue(qty, true) : "");
     }
@@ -78,6 +69,7 @@ export default function OrderForm({ user, market, depth, balances, onSessionExpi
       };
       await submitOrder(payload, user.token);
       set("quantity", ""); // Sadece miktarı sıfırla
+      onOrderPlaced?.();
     } catch(err) {
       alert("Hata: " + err.message);
       if (err instanceof AuthError) onSessionExpired?.();
@@ -97,7 +89,7 @@ export default function OrderForm({ user, market, depth, balances, onSessionExpi
       <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
         <span>Emir Gönder</span>
         <div style={{ fontSize: '11px', color: '#848e9c' }}>
-          Cüzdan: <span style={{color: '#fff'}}>{balances["USD"]?.toLocaleString() || 0} USD</span> / <span style={{color: '#fff'}}>{balances[crypto] || 0} {crypto}</span>
+          Cüzdan: <span style={{color: '#fff'}}>{(balances["USD"] || 0).toLocaleString("tr-TR", { maximumFractionDigits: 2 })} USD</span> / <span style={{color: '#fff'}}>{(balances[crypto] || 0).toLocaleString("tr-TR", { maximumFractionDigits: 4 })} {crypto}</span>
         </div>
       </div>
       

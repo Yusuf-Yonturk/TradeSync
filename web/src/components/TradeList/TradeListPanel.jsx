@@ -1,56 +1,64 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { formatTime, formatPrice, formatQty } from '../../utils/format';
-import { fetchOrders, cancelOrder, AuthError } from '../../api';
+import { fetchOrders, fetchMyTrades, cancelOrder, AuthError } from '../../api';
 import './TradeList.css';
 
-// Emirler asenkron işlendiği için liste sekme açıkken bu aralıkla yenilenir
-const ORDERS_REFRESH_MS = 3000;
+// Emirler asenkron işlendiği için kişisel listeler sekme açıkken bu aralıkla yenilenir
+const REFRESH_MS = 3000;
+
+const EMPTY = { key: "", rows: [] };
 
 export default function TradeListPanel({ trades, user, market, onSessionExpired }) {
   const [tab, setTab] = useState("ALL");
-  const [orders, setOrders] = useState([]);
-  const [loadingOrders, setLoadingOrders] = useState(false);
+  // key, satırların hangi sekme ve piyasa için yüklendiğini tutar
+  const [orders, setOrders] = useState(EMPTY);
+  const [myTrades, setMyTrades] = useState(EMPTY);
 
-  // Açık emirleri çek — sadece "EMİRLERİM" sekmesindeyken
-  const loadOrders = useCallback(async (silent = false) => {
-    if (!user?.token) return;
-    if (!silent) setLoadingOrders(true);
-    try {
-      const data = await fetchOrders(user.token, market);
-      // API array döndürürse kullan, yoksa boş dizi
-      setOrders(Array.isArray(data) ? data : []);
-    } catch (err) {
-      if (err instanceof AuthError) onSessionExpired?.();
-      // arka plan yenilemesi başarısız olursa eldeki listeyi koru
-      if (!silent) setOrders([]);
-    } finally {
-      if (!silent) setLoadingOrders(false);
-    }
-  }, [user, market, onSessionExpired]);
+  const token = user?.token;
+  const viewKey = `${tab}:${market}`;
 
+  // "İşlemlerim" ve "Açık Emirler" kullanıcıya özeldir, sunucudan token ile çekilir
   useEffect(() => {
-    if (tab !== "ORDERS") return;
-    loadOrders();
-    const timer = setInterval(() => loadOrders(true), ORDERS_REFRESH_MS);
-    return () => clearInterval(timer);
-  }, [tab, loadOrders]);
+    if (tab === "ALL" || !token) return;
+    const key = `${tab}:${market}`;
+    let active = true;
+
+    const load = () => {
+      const request = tab === "ORDERS" ? fetchOrders(token, market) : fetchMyTrades(token, market);
+      request
+        .then((data) => {
+          if (!active) return;
+          const result = { key, rows: Array.isArray(data) ? data : [] };
+          if (tab === "ORDERS") setOrders(result);
+          else setMyTrades(result);
+        })
+        .catch((err) => {
+          // arka plan yenilemesi başarısız olursa eldeki listeyi koru
+          if (active && err instanceof AuthError) onSessionExpired?.();
+        });
+    };
+
+    load();
+    const timer = setInterval(load, REFRESH_MS);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [tab, market, token, onSessionExpired]);
 
   const handleCancel = async (orderId) => {
     try {
       await cancelOrder(orderId, user.token);
-      setOrders(prev => prev.filter(o => o.id !== orderId));
+      setOrders(prev => ({ ...prev, rows: prev.rows.filter(o => o.id !== orderId) }));
     } catch (err) {
       alert("İptal edilemedi: " + err.message);
       if (err instanceof AuthError) onSessionExpired?.();
     }
   };
 
-  // Tüm işlemler vs sadece benimkiler (tamamlanmış trade'ler)
-  const displayTrades = tab === "ALL"
-    ? trades
-    : tab === "MY"
-      ? trades.filter(t => t.buyer_id === user?.user_id || t.seller_id === user?.user_id)
-      : null; // "ORDERS" sekmesi için null
+  const loadingOrders = orders.key !== viewKey;
+  const loadingMine = tab === "MY" && myTrades.key !== viewKey;
+  const displayTrades = tab === "MY" ? (loadingMine ? [] : myTrades.rows) : trades;
 
   return (
     <div className="panel trade-list">
@@ -87,15 +95,11 @@ export default function TradeListPanel({ trades, user, market, onSessionExpired 
           <div className="ob-list">
             {displayTrades.length === 0 ? (
               <div className="tl-empty">
-                {tab === "MY" ? "Henüz tamamlanmış işleminiz yok." : "İşlem bulunamadı."}
+                {loadingMine ? "Yükleniyor..." : tab === "MY" ? "Henüz tamamlanmış işleminiz yok." : "İşlem bulunamadı."}
               </div>
             ) : displayTrades.map((t, idx) => {
-              const isMyBuy  = t.buyer_id  === user?.user_id;
-              const isMySell = t.seller_id === user?.user_id;
-              let colorClass = "green";
-              if (tab === "MY") {
-                if (isMySell && !isMyBuy) colorClass = "red";
-              }
+              // herkese açık listede yön bilgisi yoktur
+              const colorClass = t.side === "SELL" ? "red" : "green";
               return (
                 <div key={t.id || idx} className="trade-row">
                   <span className="muted">{formatTime(t.traded_at || t.timestamp)}</span>
@@ -120,9 +124,9 @@ export default function TradeListPanel({ trades, user, market, onSessionExpired 
           <div className="ob-list">
             {loadingOrders ? (
               <div className="tl-empty">Yükleniyor...</div>
-            ) : orders.length === 0 ? (
+            ) : orders.rows.length === 0 ? (
               <div className="tl-empty">Açık emir bulunmuyor.</div>
-            ) : orders.map((o, idx) => (
+            ) : orders.rows.map((o, idx) => (
               <div key={o.id || idx} className="order-row">
                 <span className={o.side === "BUY" ? "green" : "red"}>
                   {o.side === "BUY" ? "AL" : "SAT"}

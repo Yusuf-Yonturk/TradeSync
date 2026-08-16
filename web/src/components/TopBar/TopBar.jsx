@@ -10,7 +10,6 @@ export default function TopBar({
   onOpenWallet,
   onLogout,
   user,
-  balances,
   tickerPrices
 }) {
   return (
@@ -55,10 +54,9 @@ export default function TopBar({
         <div className="user-settings" onClick={onOpenSettings} style={{ marginRight: '8px' }}>
           ⚙️ Ayarlar
         </div>
-        {user && balances && (
+        {user && (
           <ProfileDropdown
             user={user}
-            balances={balances}
             onLogout={onLogout}
             onOpenSettings={onOpenSettings}
             onOpenWallet={onOpenWallet}

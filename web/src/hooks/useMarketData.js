@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { fetchTrades, fetchDepth, fetchKlines, WS_URL } from '../api';
 
 /**
@@ -17,32 +17,17 @@ export function useMarketData(market, user) {
 
   // ---------- REST Çağrıları ----------
 
-  const loadTrades = useCallback(async () => {
-    try {
-      const data = await fetchTrades(market);
-      setTrades(data);
-    } catch { /* sessiz */ }
-  }, [market]);
-
-  const loadDepth = useCallback(async () => {
-    try {
-      const data = await fetchDepth(market);
-      setDepth(data);
-    } catch { /* sessiz */ }
-  }, [market]);
-
-  const loadKlines = useCallback(async () => {
-    try {
-      const data = await fetchKlines(market);
-      setKlines(data || []);
-    } catch { /* sessiz */ }
-  }, [market]);
-
   useEffect(() => {
-    loadTrades();
-    loadDepth();
-    loadKlines();
-  }, [loadTrades, loadDepth, loadKlines]);
+    // piyasa değiştikten sonra gelen eski yanıtlar yok sayılır
+    let active = true;
+    const apply = (setter) => (data) => { if (active) setter(data); };
+
+    fetchTrades(market).then(apply(setTrades)).catch(() => { /* sessiz */ });
+    fetchDepth(market).then(apply(setDepth)).catch(() => { /* sessiz */ });
+    fetchKlines(market).then(apply((data) => setKlines(data || []))).catch(() => { /* sessiz */ });
+
+    return () => { active = false; };
+  }, [market]);
 
   // ---------- WebSocket ----------
 

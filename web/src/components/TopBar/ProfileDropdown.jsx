@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-export default function ProfileDropdown({ user, balances, onLogout, onOpenSettings, onOpenWallet }) {
+export default function ProfileDropdown({ user, onLogout, onOpenSettings, onOpenWallet }) {
   const [open, setOpen] = useState(false);
   
   return (

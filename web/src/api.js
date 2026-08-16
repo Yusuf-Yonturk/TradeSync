@@ -98,3 +98,29 @@ export async function cancelOrder(orderId, token) {
   if (!res.ok) throw new Error(data.error || "emir iptal edilemedi");
   return data;
 }
+
+/**
+ * Giriş yapan kullanıcının bakiyeleri. Değerler diğer uçlar gibi 10^4 ölçeklidir.
+ */
+export async function fetchBalances(token) {
+  const res = await fetch(`${BASE}/balances`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) throw new AuthError("Oturum süresi doldu");
+  if (!res.ok) throw new Error("bakiye alinamadi");
+  return res.json();
+}
+
+/**
+ * Giriş yapan kullanıcının gerçekleşmiş işlemleri; her kayıtta yön (side) bulunur.
+ */
+export async function fetchMyTrades(token, symbol = "") {
+  const params = new URLSearchParams();
+  if (symbol) params.append("symbol", symbol);
+  const res = await fetch(`${BASE}/trades/mine?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) throw new AuthError("Oturum süresi doldu");
+  if (!res.ok) throw new Error("islemler alinamadi");
+  return res.json();
+}
