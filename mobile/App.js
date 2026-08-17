@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, SafeAreaView } from 'react-native';
-import { fetchDepth, fetchTrades } from './src/api';
-
-const WS_URL = "wss://715b27a221be60.lhr.life/ws";
+import { fetchDepth, fetchTrades, parseMessage, WS_URL } from './src/api';
 
 export default function App() {
   const [market] = useState("BTC-USD");
@@ -21,16 +19,13 @@ export default function App() {
     // WebSocket connection
     const ws = new WebSocket(WS_URL);
     ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.event_type === "depth_update" && msg.symbol === market) {
-          setDepth({ bids: msg.bids || [], asks: msg.asks || [] });
-        } else if (msg.event_type === "trade_update" && msg.symbol === market) {
-          setTrades(prev => [msg, ...prev].slice(0, 50));
-          setLastPrice(msg.price);
-        }
-      } catch (err) {
-        console.log("ws parse error", err);
+      const msg = parseMessage(event.data);
+      if (!msg || msg.symbol !== market) return;
+      if (msg.type === "depth") {
+        setDepth({ bids: msg.bids, asks: msg.asks });
+      } else {
+        setTrades(prev => [msg, ...prev].slice(0, 50));
+        setLastPrice(msg.price);
       }
     };
 
